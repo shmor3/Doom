@@ -1,0 +1,238 @@
+let mobj_list = []
+let mobj_id_counter = 0
+
+func mobj_spawn(x, y, mtype) {
+    const info = mobjinfo_get(mtype)
+    if info == null { return null }
+    mobj_id_counter = mobj_id_counter + 1
+    const mobj = {
+        "id": mobj_id_counter,
+        "x": x, "y": y, "z": 0,
+        "angle": 0,
+        "momx": 0, "momy": 0, "momz": 0,
+        "type": mtype,
+        "info": info,
+        "health": info["spawnhealth"],
+        "flags": info["flags"],
+        "radius": info["radius"],
+        "height": info["height"],
+        "speed": info["speed"],
+        "state": null,
+        "tics": 0,
+        "sprite": null,
+        "frame": 0,
+        "target": null,
+        "threshold": 0,
+        "reactiontime": info["reactiontime"],
+        "movecount": 0,
+        "movedir": 8,
+        "sector": null,
+        "sector_light": 160,
+        "floorz": 0,
+        "ceilingz": 0,
+        "subsector": 0
+    }
+    mobj_set_state(mobj, info["spawnstate"])
+    const ss_idx = map_get_subsector(x, y)
+    if ss_idx < map_num_subsectors {
+        const sec = map_subsectors[ss_idx]["sector"]
+        if sec != null {
+            mobj["sector"] = sec
+            mobj["sector_light"] = sec["lightlevel"]
+            mobj["floorz"] = sec["floorheight"]
+            mobj["ceilingz"] = sec["ceilingheight"]
+        }
+    }
+    if (info["flags"] & MF_SPAWNCEILING) != 0 {
+        mobj["z"] = mobj["ceilingz"] - info["height"]
+    } else {
+        mobj["z"] = mobj["floorz"]
+    }
+    mobj_list.push(mobj)
+    mobj
+}
+
+func mobj_set_state(mobj, state_idx) {
+    if state_idx < 0 || state_idx >= len(game_states) {
+        mobj["state"] = null
+        mobj["tics"] = -1
+        return
+    }
+    const st = game_states[state_idx]
+    mobj["state"] = st
+    mobj["tics"] = st["tics"]
+    mobj["sprite"] = st["sprite"]
+    mobj["frame"] = st["frame"]
+}
+
+func mobj_think(mobj) {
+    if mobj["tics"] == -1 { return }
+    mobj["tics"] = mobj["tics"] - 1
+    if mobj["tics"] <= 0 {
+        const st = mobj["state"]
+        if st != null && st["nextstate"] >= 0 {
+            mobj_set_state(mobj, st["nextstate"])
+            const new_st = mobj["state"]
+            if new_st != null && new_st["action"] != null {
+                new_st["action"](mobj)
+            }
+        } else {
+            mobj_remove(mobj)
+        }
+    }
+    if (mobj["flags"] & MF_MISSILE) != 0 {
+        mobj["x"] = mobj["x"] + mobj["momx"]
+        mobj["y"] = mobj["y"] + mobj["momy"]
+        mobj["z"] = mobj["z"] + mobj["momz"]
+    } else if mobj["momx"] != 0 || mobj["momy"] != 0 {
+        mobj_xy_movement(mobj)
+    }
+    if (mobj["flags"] & MF_NOGRAVITY) == 0 {
+        if mobj["z"] > mobj["floorz"] {
+            mobj["momz"] = mobj["momz"] - GRAVITY
+        }
+        mobj["z"] = mobj["z"] + mobj["momz"]
+        if mobj["z"] <= mobj["floorz"] {
+            mobj["z"] = mobj["floorz"]
+            mobj["momz"] = 0
+        }
+    }
+    const ss_idx = map_get_subsector(mobj["x"], mobj["y"])
+    if ss_idx < map_num_subsectors {
+        const sec = map_subsectors[ss_idx]["sector"]
+        if sec != null {
+            mobj["sector"] = sec
+            mobj["sector_light"] = sec["lightlevel"]
+            mobj["floorz"] = sec["floorheight"]
+            mobj["ceilingz"] = sec["ceilingheight"]
+        }
+    }
+}
+
+func mobj_xy_movement(mobj) {
+    const newx = mobj["x"] + mobj["momx"]
+    const newy = mobj["y"] + mobj["momy"]
+    mobj["x"] = newx
+    mobj["y"] = newy
+    mobj["momx"] = fixed_mul(mobj["momx"], FRICTION)
+    mobj["momy"] = fixed_mul(mobj["momy"], FRICTION)
+    if abs(mobj["momx"]) < STOPSPEED { mobj["momx"] = 0 }
+    if abs(mobj["momy"]) < STOPSPEED { mobj["momy"] = 0 }
+}
+
+func mobj_remove(mobj) {
+    mobj["flags"] = 0
+    mobj["health"] = 0
+    mobj["tics"] = -1
+    mobj["state"] = null
+}
+
+func mobj_damage(target, inflictor, source, damage) {
+    if (target["flags"] & MF_SHOOTABLE) == 0 { return }
+    if target["health"] <= 0 { return }
+    target["health"] = target["health"] - damage
+    if target["health"] <= 0 {
+        mobj_kill(target, source)
+        return
+    }
+    target["reactiontime"] = 0
+    if target["target"] == null || target["target"]["health"] <= 0 {
+        target["target"] = source
+    }
+    if target["info"] != null && target["info"]["painstate"] >= 0 {
+        const chance = target["info"]["painchance"]
+        if random_int(256) < chance {
+            mobj_set_state(target, target["info"]["painstate"])
+        }
+    }
+}
+
+func mobj_kill(target, source) {
+    target["flags"] = target["flags"] & ~(MF_SHOOTABLE | MF_FLOAT | MF_SKULLFLY)
+    target["flags"] = target["flags"] | MF_CORPSE
+    target["height"] = target["height"] >> 2
+    if (target["flags"] & MF_COUNTKILL) != 0 {
+        player_killcount = player_killcount + 1
+    }
+    if target["info"] != null && target["info"]["deathstate"] >= 0 {
+        mobj_set_state(target, target["info"]["deathstate"])
+    }
+}
+
+func things_spawn_map() {
+    mobj_list = []
+    mobj_id_counter = 0
+    let player_thing = null
+    for thing in map_things {
+        const ttype = thing["type"]
+        const opts = thing["options"]
+        if (opts & MTF_NORMAL) == 0 && ttype != 1 && ttype != 11 { continue }
+        if ttype == 1 {
+            player_thing = thing
+            continue
+        }
+        const mobj = mobj_spawn(thing["x"], thing["y"], ttype)
+        if mobj != null {
+            mobj["angle"] = thing["angle"] * ANG45 / 45
+            if (opts & MTF_AMBUSH) != 0 {
+                mobj["flags"] = mobj["flags"] | MF_AMBUSH
+            }
+        }
+    }
+    if player_thing != null {
+        player_spawn(player_thing["x"], player_thing["y"], player_thing["angle"])
+    } else {
+        player_spawn(0, 0, 0)
+    }
+    println(f"Spawned {len(mobj_list)} things, player at ({fixed_to_int(player_x)}, {fixed_to_int(player_y)})")
+}
+
+func things_run_thinkers() {
+    let i = 0
+    while i < len(mobj_list) {
+        const mobj = mobj_list[i]
+        if mobj["health"] > 0 || (mobj["flags"] & MF_CORPSE) != 0 {
+            mobj_think(mobj)
+        }
+        i = i + 1
+    }
+}
+
+func things_add_vissprites() {
+    for mobj in mobj_list {
+        if mobj["state"] == null { continue }
+        if mobj["health"] <= 0 && (mobj["flags"] & MF_CORPSE) == 0 { continue }
+        const dx = mobj["x"] - r_viewx
+        const dy = mobj["y"] - r_viewy
+        const tz = fixed_mul(dx, r_viewcos) + fixed_mul(dy, r_viewsin)
+        if tz <= 4 * FRACUNIT { continue }
+        const tx = fixed_mul(dx, r_viewsin) - fixed_mul(dy, r_viewcos)
+        r_add_vissprite(mobj, tx, tz)
+    }
+}
+
+let game_states = []
+let game_random_idx = 0
+const random_table = [
+    0, 8, 109, 220, 222, 241, 149, 107, 75, 248, 254, 140, 16, 66, 74, 21,
+    211, 47, 80, 242, 154, 27, 205, 128, 161, 89, 77, 36, 95, 110, 85, 48,
+    212, 140, 211, 249, 22, 79, 200, 50, 28, 188, 52, 140, 202, 120, 68, 145,
+    62, 70, 184, 190, 91, 197, 152, 224, 149, 104, 25, 178, 252, 182, 202, 182,
+    141, 197, 4, 81, 181, 242, 145, 42, 39, 227, 156, 198, 225, 193, 219, 93,
+    122, 175, 249, 0, 175, 143, 70, 239, 46, 246, 163, 53, 163, 109, 168, 135,
+    2, 235, 25, 92, 20, 145, 138, 77, 69, 166, 78, 176, 173, 212, 166, 113,
+    94, 161, 41, 50, 239, 49, 111, 164, 70, 60, 2, 37, 171, 75, 136, 156,
+    11, 56, 42, 146, 138, 229, 73, 146, 77, 61, 98, 196, 135, 106, 63, 197,
+    195, 86, 96, 203, 113, 101, 170, 247, 181, 113, 80, 250, 108, 7, 255, 237,
+    129, 226, 79, 107, 112, 166, 103, 241, 24, 223, 239, 120, 198, 58, 60, 82,
+    128, 3, 184, 66, 143, 224, 145, 224, 81, 206, 163, 45, 63, 90, 168, 114,
+    59, 33, 159, 95, 28, 139, 123, 98, 125, 196, 15, 70, 194, 253, 54, 14,
+    109, 226, 71, 17, 161, 93, 186, 87, 244, 138, 20, 52, 123, 204, 26, 60,
+    98, 55, 75, 185, 120, 252, 48, 196, 243, 150, 8, 89, 38, 169, 213, 6,
+    30, 123, 100, 134, 138, 212, 112, 211, 173, 15, 32, 145, 44, 11, 9, 186
+]
+
+func random_int(max) {
+    game_random_idx = (game_random_idx + 1) & 255
+    random_table[game_random_idx] % max
+}

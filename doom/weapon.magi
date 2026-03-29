@@ -1,0 +1,224 @@
+let weapon_state = "ready"
+let weapon_tics = 0
+let weapon_frame = 0
+let weapon_flash = false
+let weapon_flash_tics = 0
+
+const weapon_info = [
+    {"ammo": am_noammo, "upstate": 0, "downstate": 0, "readystate": 0, "atkstate": 0, "flashstate": -1},
+    {"ammo": am_clip,   "upstate": 0, "downstate": 0, "readystate": 0, "atkstate": 0, "flashstate": -1},
+    {"ammo": am_shell,  "upstate": 0, "downstate": 0, "readystate": 0, "atkstate": 0, "flashstate": -1},
+    {"ammo": am_clip,   "upstate": 0, "downstate": 0, "readystate": 0, "atkstate": 0, "flashstate": -1},
+    {"ammo": am_misl,   "upstate": 0, "downstate": 0, "readystate": 0, "atkstate": 0, "flashstate": -1},
+    {"ammo": am_cell,   "upstate": 0, "downstate": 0, "readystate": 0, "atkstate": 0, "flashstate": -1},
+    {"ammo": am_cell,   "upstate": 0, "downstate": 0, "readystate": 0, "atkstate": 0, "flashstate": -1},
+    {"ammo": am_noammo, "upstate": 0, "downstate": 0, "readystate": 0, "atkstate": 0, "flashstate": -1},
+    {"ammo": am_shell,  "upstate": 0, "downstate": 0, "readystate": 0, "atkstate": 0, "flashstate": -1}
+]
+
+const ammo_per_shot = [0, 1, 1, 1, 1, 1, 40, 0, 2]
+
+func weapon_tick() {
+    if player_dead { return }
+    if player_pendingweapon != player_readyweapon {
+        weapon_state = "lowering"
+        weapon_tics = 6
+        return
+    }
+    match weapon_state {
+        "ready" => {
+            if player_attacking {
+                weapon_fire()
+            }
+        },
+        "firing" => {
+            weapon_tics = weapon_tics - 1
+            if weapon_tics <= 0 {
+                weapon_state = "ready"
+                player_refire = 0
+            }
+        },
+        "raising" => {
+            weapon_tics = weapon_tics - 1
+            if weapon_tics <= 0 {
+                weapon_state = "ready"
+            }
+        },
+        "lowering" => {
+            weapon_tics = weapon_tics - 1
+            if weapon_tics <= 0 {
+                player_readyweapon = player_pendingweapon
+                weapon_state = "raising"
+                weapon_tics = 6
+            }
+        },
+        _ => {}
+    }
+    if weapon_flash_tics > 0 {
+        weapon_flash_tics = weapon_flash_tics - 1
+        if weapon_flash_tics <= 0 { weapon_flash = false }
+    }
+}
+
+func weapon_fire() {
+    const wp = player_readyweapon
+    const ammo_type = weapon_info[wp]["ammo"]
+    const cost = ammo_per_shot[wp]
+    if ammo_type != am_noammo {
+        if player_ammo[ammo_type] < cost { return }
+        player_ammo[ammo_type] = player_ammo[ammo_type] - cost
+    }
+    weapon_state = "firing"
+    weapon_flash = true
+    weapon_flash_tics = 4
+    player_extralight = 2
+    match wp {
+        wp_fist => weapon_fire_fist(),
+        wp_chainsaw => weapon_fire_chainsaw(),
+        wp_pistol => { weapon_fire_bullet(1, 5, 15); weapon_tics = 10 },
+        wp_shotgun => { weapon_fire_shotgun(); weapon_tics = 20 },
+        wp_chaingun => { weapon_fire_bullet(1, 5, 15); weapon_tics = 4 },
+        wp_missile => { weapon_fire_rocket(); weapon_tics = 12 },
+        wp_plasma => { weapon_fire_plasma(); weapon_tics = 3 },
+        wp_bfg => { weapon_fire_bfg(); weapon_tics = 40 },
+        wp_supershotgun => { weapon_fire_ssg(); weapon_tics = 30 },
+        _ => { weapon_tics = 10 }
+    }
+}
+
+func weapon_fire_fist() {
+    const angle = player_angle + ((random_int(256) - 128) << 18)
+    const damage = (random_int(10) + 1) * 2
+    const berserk_mult = if player_powers[pw_strength] > 0 { 10 } else { 1 }
+    weapon_melee_attack(damage * berserk_mult, MELEERANGE)
+    weapon_tics = 8
+}
+
+func weapon_fire_chainsaw() {
+    const damage = (random_int(10) + 1) * 2
+    weapon_melee_attack(damage, MELEERANGE + FRACUNIT)
+    weapon_tics = 4
+}
+
+func weapon_fire_bullet(count, min_dmg, max_dmg) {
+    let i = 0
+    while i < count {
+        const angle = player_angle + ((random_int(256) - 128) << 18)
+        const damage = random_int(max_dmg - min_dmg + 1) + min_dmg
+        weapon_hitscan(angle, MISSILERANGE, damage)
+        i = i + 1
+    }
+}
+
+func weapon_fire_shotgun() {
+    let i = 0
+    while i < 7 {
+        const angle = player_angle + ((random_int(256) - 128) << 18)
+        const damage = random_int(11) + 5
+        weapon_hitscan(angle, MISSILERANGE, damage)
+        i = i + 1
+    }
+}
+
+func weapon_fire_ssg() {
+    let i = 0
+    while i < 20 {
+        const angle = player_angle + ((random_int(512) - 256) << 17)
+        const damage = random_int(11) + 5
+        weapon_hitscan(angle, MISSILERANGE, damage)
+        i = i + 1
+    }
+}
+
+func weapon_fire_rocket() {
+    const angle = player_angle
+    const speed = 20 * FRACUNIT
+    const missile = mobj_spawn(
+        player_x + fixed_mul(32 * FRACUNIT, fine_cosine(angle)),
+        player_y + fixed_mul(32 * FRACUNIT, fine_sine(angle)),
+        0
+    )
+    if missile != null {
+        missile["momx"] = fixed_mul(speed, fine_cosine(angle))
+        missile["momy"] = fixed_mul(speed, fine_sine(angle))
+        missile["flags"] = MF_MISSILE | MF_NOBLOCKMAP | MF_NOGRAVITY
+        missile["angle"] = angle
+    }
+}
+
+func weapon_fire_plasma() {
+    const angle = player_angle
+    const speed = 25 * FRACUNIT
+    const missile = mobj_spawn(
+        player_x + fixed_mul(16 * FRACUNIT, fine_cosine(angle)),
+        player_y + fixed_mul(16 * FRACUNIT, fine_sine(angle)),
+        0
+    )
+    if missile != null {
+        missile["momx"] = fixed_mul(speed, fine_cosine(angle))
+        missile["momy"] = fixed_mul(speed, fine_sine(angle))
+        missile["flags"] = MF_MISSILE | MF_NOBLOCKMAP | MF_NOGRAVITY
+    }
+}
+
+func weapon_fire_bfg() {
+    const angle = player_angle
+    const speed = 25 * FRACUNIT
+    const missile = mobj_spawn(
+        player_x + fixed_mul(32 * FRACUNIT, fine_cosine(angle)),
+        player_y + fixed_mul(32 * FRACUNIT, fine_sine(angle)),
+        0
+    )
+    if missile != null {
+        missile["momx"] = fixed_mul(speed, fine_cosine(angle))
+        missile["momy"] = fixed_mul(speed, fine_sine(angle))
+        missile["flags"] = MF_MISSILE | MF_NOBLOCKMAP | MF_NOGRAVITY
+        missile["health"] = 100
+    }
+}
+
+func weapon_melee_attack(damage, range) {
+    let closest = null
+    let closest_dist = range
+    for mobj in mobj_list {
+        if (mobj["flags"] & MF_SHOOTABLE) == 0 { continue }
+        if mobj["health"] <= 0 { continue }
+        const dist = point_to_dist(player_x, player_y, mobj["x"], mobj["y"])
+        if dist < closest_dist {
+            const ang = point_to_angle_2(player_x, player_y, mobj["x"], mobj["y"])
+            let diff = ang - player_angle
+            while diff > ANG180 { diff = diff - ANG360 }
+            while diff < -ANG180 { diff = diff + ANG360 }
+            if abs(diff) < ANG90 {
+                closest = mobj
+                closest_dist = dist
+            }
+        }
+    }
+    if closest != null {
+        mobj_damage(closest, null, null, damage)
+    }
+}
+
+func weapon_hitscan(angle, range, damage) {
+    let closest = null
+    let closest_dist = range
+    for mobj in mobj_list {
+        if (mobj["flags"] & MF_SHOOTABLE) == 0 { continue }
+        if mobj["health"] <= 0 { continue }
+        const dist = point_to_dist(player_x, player_y, mobj["x"], mobj["y"])
+        if dist >= range { continue }
+        const ang = point_to_angle_2(player_x, player_y, mobj["x"], mobj["y"])
+        let diff = ang - angle
+        while diff > ANG180 { diff = diff - ANG360 }
+        while diff < -ANG180 { diff = diff + ANG360 }
+        const half_angle = point_to_angle_2(0, 0, dist, mobj["radius"])
+        if abs(diff) < half_angle && dist < closest_dist {
+            closest = mobj
+            closest_dist = dist
+        }
+    }
+    if closest != null {
+        mobj_damage(closest, null, null, damage)
+    }
+}

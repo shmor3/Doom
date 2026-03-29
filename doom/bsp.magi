@@ -1,0 +1,63 @@
+let bsp_validcount = 0
+
+func bsp_new_validcount() {
+    bsp_validcount = bsp_validcount + 1
+}
+
+func r_render_bsp_node(node_idx, render_subsector_fn) {
+    if node_idx >= 32768 {
+        render_subsector_fn(node_idx & 32767)
+        return
+    }
+    if node_idx < 0 || node_idx >= map_num_nodes { return }
+    const node = map_nodes[node_idx]
+    const side = point_on_side(player_x, player_y, node["x"], node["y"], node["dx"], node["dy"])
+    r_render_bsp_node(node["children"][side], render_subsector_fn)
+    const other = if side == 0 { 1 } else { 0 }
+    if r_check_bbox(node["bbox"][other]) {
+        r_render_bsp_node(node["children"][other], render_subsector_fn)
+    }
+}
+
+func r_check_bbox(bbox) {
+    const boxx = if player_x <= bbox["left"] { 0 }
+                 else if player_x < bbox["right"] { 1 }
+                 else { 2 }
+    const boxy = if player_y >= bbox["top"] { 0 }
+                 else if player_y > bbox["bottom"] { 1 }
+                 else { 2 }
+    const boxpos = boxy * 3 + boxx
+    if boxpos == 4 { return true }
+    const checkcoord = [
+        [3, 0, 2, 1], [3, 0, 2, 0], [3, 1, 2, 0],
+        [3, 0, 3, 1], [-1,-1,-1,-1], [2, 0, 2, 1],
+        [3, 0, 3, 0], [2, 0, 3, 1], [2, 0, 3, 0]
+    ]
+    const cc = checkcoord[boxpos]
+    if cc[0] == -1 { return true }
+    const x1 = if cc[0] == 2 { bbox["left"] } else { bbox["right"] }
+    const y1 = if cc[1] == 0 { bbox["top"] } else { bbox["bottom"] }
+    const x2 = if cc[2] == 2 { bbox["left"] } else { bbox["right"] }
+    const y2 = if cc[3] == 0 { bbox["top"] } else { bbox["bottom"] }
+    const angle1 = r_point_to_angle(player_x, player_y, x1, y1) - player_angle
+    const angle2 = r_point_to_angle(player_x, player_y, x2, y2) - player_angle
+    const span = angle1 - angle2
+    if span >= ANG180 { return true }
+    let tspan = angle1 + clipangle
+    if tspan > 2 * clipangle {
+        tspan = tspan - 2 * clipangle
+        if tspan >= span { return false }
+    }
+    tspan = clipangle - angle2
+    if tspan > 2 * clipangle {
+        tspan = tspan - 2 * clipangle
+        if tspan >= span { return false }
+    }
+    true
+}
+
+let clipangle = ANG90
+
+func bsp_init() {
+    clipangle = point_to_angle_2(0, 0, VIEWWIDTH << FRACBITS, (VIEWWIDTH / 2) << FRACBITS)
+}

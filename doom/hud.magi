@@ -1,0 +1,256 @@
+let hud_stbar_patch = null
+let hud_face_patches = {}
+let hud_num_patches = []
+let hud_arms_patches = []
+let hud_key_patches = []
+let hud_automap = false
+let hud_message = ""
+let hud_message_tics = 0
+
+func hud_init() {
+    hud_load_stbar()
+    hud_load_numbers()
+}
+
+func hud_load_stbar() {
+    const idx = wad_find("STBAR")
+    if idx >= 0 { hud_stbar_patch = texture_get_patch(idx) }
+}
+
+func hud_load_numbers() {
+    hud_num_patches = []
+    let i = 0
+    while i < 10 {
+        const name = f"STTNUM{i}"
+        const idx = wad_find(name)
+        if idx >= 0 { hud_num_patches.push(texture_get_patch(idx)) }
+        else { hud_num_patches.push(null) }
+        i = i + 1
+    }
+    const minus_idx = wad_find("STTMINUS")
+    if minus_idx >= 0 { hud_num_patches.push(texture_get_patch(minus_idx)) }
+}
+
+func hud_draw() {
+    hud_draw_stbar()
+    if hud_message_tics > 0 {
+        hud_draw_message()
+        hud_message_tics = hud_message_tics - 1
+    }
+}
+
+func hud_draw_stbar() {
+    if hud_stbar_patch != null {
+        hud_draw_patch_to_fb(0, ST_Y, hud_stbar_patch)
+    } else {
+        let x = 0
+        while x < SCREENWIDTH {
+            let y = ST_Y
+            while y < SCREENHEIGHT {
+                r_framebuffer[y * SCREENWIDTH + x] = 96
+                y = y + 1
+            }
+            x = x + 1
+        }
+    }
+    hud_draw_number(44, ST_Y + 3, player_ammo[weapon_info[player_readyweapon]["ammo"]], 3)
+    hud_draw_number(90, ST_Y + 3, player_health, 3)
+    hud_draw_percent(90 + 14 * 3, ST_Y + 3)
+    hud_draw_number(221, ST_Y + 3, player_armor, 3)
+    hud_draw_percent(221 + 14 * 3, ST_Y + 3)
+    hud_draw_keys()
+    hud_draw_face()
+}
+
+func hud_draw_number(x, y, value, digits) {
+    if value < 0 { value = 0 }
+    let num = value
+    let d = digits
+    let xp = x + (d - 1) * 14
+    while d > 0 {
+        const digit = num % 10
+        if digit < len(hud_num_patches) && hud_num_patches[digit] != null {
+            hud_draw_patch_to_fb(xp, y, hud_num_patches[digit])
+        }
+        num = num / 10
+        xp = xp - 14
+        d = d - 1
+    }
+}
+
+func hud_draw_percent(x, y) {
+    const pct_idx = wad_find("STTPRCNT")
+    if pct_idx >= 0 {
+        const patch = texture_get_patch(pct_idx)
+        if patch != null { hud_draw_patch_to_fb(x, y, patch) }
+    }
+}
+
+func hud_draw_keys() {
+    const key_x = 239
+    const key_names = ["STKEYS0", "STKEYS1", "STKEYS2", "STKEYS3", "STKEYS4", "STKEYS5"]
+    let i = 0
+    while i < NUMCARDS {
+        if player_keys[i] {
+            const kid = wad_find(key_names[i])
+            if kid >= 0 {
+                const p = texture_get_patch(kid)
+                if p != null { hud_draw_patch_to_fb(key_x, ST_Y + 3 + (i % 3) * 10, p) }
+            }
+        }
+        i = i + 1
+    }
+}
+
+func hud_draw_face() {
+    const health = player_health
+    let face_name = "STFST01"
+    if health > 80 { face_name = "STFST00" }
+    else if health > 60 { face_name = "STFST01" }
+    else if health > 40 { face_name = "STFST02" }
+    else if health > 20 { face_name = "STFST03" }
+    else { face_name = "STFST04" }
+    if player_damagecount > 0 { face_name = "STFOUCH0" }
+    if player_dead { face_name = "STFDEAD0" }
+    const fid = wad_find(face_name)
+    if fid >= 0 {
+        const p = texture_get_patch(fid)
+        if p != null { hud_draw_patch_to_fb(143, ST_Y + 1, p) }
+    }
+}
+
+func hud_draw_patch_to_fb(x, y, patch) {
+    if patch == null { return }
+    let col = 0
+    while col < patch["width"] {
+        const sx = x + col
+        if sx >= 0 && sx < SCREENWIDTH {
+            texture_draw_patch_column(patch, col, r_framebuffer, sx + y * SCREENWIDTH, SCREENHEIGHT - y, null)
+        }
+        col = col + 1
+    }
+}
+
+func hud_show_message(msg) {
+    hud_message = msg
+    hud_message_tics = TICRATE * 4
+}
+
+func hud_draw_message() {
+    let x = 0
+    let i = 0
+    while i < len(hud_message) {
+        const c = hud_message.char_at(i)
+        const code = to_byte(c)
+        if code >= 33 && code <= 95 {
+            const name = f"STCFN{code}"
+            const fid = wad_find(name)
+            if fid >= 0 {
+                const p = texture_get_patch(fid)
+                if p != null {
+                    hud_draw_patch_to_fb(x, 0, p)
+                    x = x + p["width"]
+                } else { x = x + 8 }
+            } else { x = x + 8 }
+        } else { x = x + 4 }
+        i = i + 1
+    }
+}
+
+func automap_toggle() {
+    hud_automap = !hud_automap
+}
+
+func automap_draw() {
+    if !hud_automap { return }
+    let i = 0
+    while i < SCREENWIDTH * VIEWHEIGHT {
+        r_framebuffer[i] = 0
+        i = i + 1
+    }
+    const scale = FRACUNIT / 4
+    const cx = VIEWWIDTH / 2
+    const cy = VIEWHEIGHT / 2
+    for line in map_linedefs {
+        const flags = line["flags"]
+        if (flags & ML_DONTDRAW) != 0 { continue }
+        const x1 = cx + fixed_to_int(fixed_mul(line["v1"]["x"] - player_x, scale))
+        const y1 = cy - fixed_to_int(fixed_mul(line["v1"]["y"] - player_y, scale))
+        const x2 = cx + fixed_to_int(fixed_mul(line["v2"]["x"] - player_x, scale))
+        const y2 = cy - fixed_to_int(fixed_mul(line["v2"]["y"] - player_y, scale))
+        let color = 96
+        if line["backsector"] == null { color = 176 }
+        else if line["frontsector"]["floorheight"] != line["backsector"]["floorheight"] { color = 64 }
+        else if line["frontsector"]["ceilingheight"] != line["backsector"]["ceilingheight"] { color = 231 }
+        else { color = 104 }
+        if (flags & ML_SECRET) != 0 { color = 176 }
+        automap_draw_line(x1, y1, x2, y2, color)
+    }
+    automap_draw_player_arrow(cx, cy)
+}
+
+func automap_draw_line(x1, y1, x2, y2, color) {
+    let dx = abs(x2 - x1)
+    let dy = abs(y2 - y1)
+    let sx = if x1 < x2 { 1 } else { -1 }
+    let sy = if y1 < y2 { 1 } else { -1 }
+    let err = dx - dy
+    let cx = x1
+    let cy = y1
+    let steps = 0
+    const max_steps = dx + dy + 1
+    while steps < max_steps {
+        if cx >= 0 && cx < SCREENWIDTH && cy >= 0 && cy < VIEWHEIGHT {
+            r_framebuffer[cy * SCREENWIDTH + cx] = color
+        }
+        if cx == x2 && cy == y2 { return }
+        const e2 = 2 * err
+        if e2 > -dy { err = err - dy; cx = cx + sx }
+        if e2 < dx { err = err + dx; cy = cy + sy }
+        steps = steps + 1
+    }
+}
+
+func automap_draw_player_arrow(cx, cy) {
+    const l = 8
+    const a = player_angle
+    const ca = fine_cosine(a)
+    const sa = fine_sine(a)
+    const fx = fixed_to_int(fixed_mul(l << FRACBITS, ca))
+    const fy = -fixed_to_int(fixed_mul(l << FRACBITS, sa))
+    automap_draw_line(cx, cy, cx + fx, cy + fy, 112)
+    automap_draw_line(cx, cy, cx - fy / 2, cy + fx / 2, 112)
+    automap_draw_line(cx, cy, cx + fy / 2, cy - fx / 2, 112)
+}
+
+func intermission_draw(ep, mi, kills, items, secrets, time_secs) {
+    render_clear_fb()
+    const y = 30
+    hud_draw_text(50, y, f"E{ep}M{mi} COMPLETE")
+    hud_draw_text(50, y + 20, f"KILLS:   {player_killcount}%")
+    hud_draw_text(50, y + 30, f"ITEMS:   {player_itemcount}%")
+    hud_draw_text(50, y + 40, f"SECRETS: {player_secretcount}%")
+    hud_draw_text(50, y + 60, f"TIME: {time_secs / 60}:{(time_secs % 60):02}")
+    hud_draw_text(50, y + 80, "PRESS ENTER TO CONTINUE")
+}
+
+func hud_draw_text(x, y, text) {
+    let xp = x
+    let i = 0
+    while i < len(text) {
+        const c = text.char_at(i)
+        const code = to_byte(c)
+        if code >= 33 && code <= 95 {
+            const name = f"STCFN{code}"
+            const fid = wad_find(name)
+            if fid >= 0 {
+                const p = texture_get_patch(fid)
+                if p != null {
+                    hud_draw_patch_to_fb(xp, y, p)
+                    xp = xp + p["width"]
+                } else { xp = xp + 8 }
+            } else { xp = xp + 8 }
+        } else { xp = xp + 4 }
+        i = i + 1
+    }
+}

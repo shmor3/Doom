@@ -1,0 +1,246 @@
+const DI_EAST = 0
+const DI_NORTHEAST = 1
+const DI_NORTH = 2
+const DI_NORTHWEST = 3
+const DI_WEST = 4
+const DI_SOUTHWEST = 5
+const DI_SOUTH = 6
+const DI_SOUTHEAST = 7
+const DI_NODIR = 8
+const NUMDIR = 9
+
+const xspeed = [FRACUNIT, 47000, 0, -47000, -FRACUNIT, -47000, 0, 47000]
+const yspeed = [0, 47000, FRACUNIT, 47000, 0, -47000, -FRACUNIT, -47000]
+
+func a_look(mobj) {
+    if mobj["target"] != null && mobj["target"]["health"] > 0 { return }
+    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
+    if dist < 1024 * FRACUNIT {
+        if check_sight(mobj) {
+            mobj["target"] = {"type": "player", "x": player_x, "y": player_y, "health": player_health}
+            if mobj["info"] != null && mobj["info"]["seestate"] >= 0 {
+                mobj_set_state(mobj, mobj["info"]["seestate"])
+            }
+        }
+    }
+}
+
+func a_chase(mobj) {
+    if mobj["reactiontime"] > 0 { mobj["reactiontime"] = mobj["reactiontime"] - 1 }
+    if mobj["target"] == null || mobj["target"]["health"] <= 0 {
+        mobj["target"] = {"type": "player", "x": player_x, "y": player_y, "health": player_health}
+    }
+    if mobj["threshold"] > 0 { mobj["threshold"] = mobj["threshold"] - 1 }
+    const target = mobj["target"]
+    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
+    if mobj["info"] != null && mobj["info"]["meleestate"] >= 0 && dist < MELEERANGE {
+        a_face_target(mobj)
+        mobj_set_state(mobj, mobj["info"]["meleestate"])
+        return
+    }
+    if mobj["info"] != null && mobj["info"]["missilestate"] >= 0 && mobj["movecount"] <= 0 {
+        if check_sight(mobj) && random_int(256) < 200 {
+            a_face_target(mobj)
+            mobj_set_state(mobj, mobj["info"]["missilestate"])
+            mobj["movecount"] = random_int(15) + 5
+            return
+        }
+    }
+    mobj["movecount"] = mobj["movecount"] - 1
+    if mobj["movecount"] < 0 || !mobj_try_walk(mobj) {
+        mobj_new_chase_dir(mobj)
+    }
+    if mobj["movedir"] != DI_NODIR {
+        const speed = mobj["speed"]
+        const dir = mobj["movedir"]
+        if dir < 8 {
+            mobj["momx"] = fixed_mul(speed, xspeed[dir])
+            mobj["momy"] = fixed_mul(speed, yspeed[dir])
+        }
+    }
+}
+
+func a_face_target(mobj) {
+    mobj["angle"] = point_to_angle_2(mobj["x"], mobj["y"], player_x, player_y)
+}
+
+func a_pos_attack(mobj) {
+    a_face_target(mobj)
+    const damage = (random_int(5) + 1) * 3
+    p_line_attack(mobj, mobj["angle"], MISSILERANGE, 0, damage)
+}
+
+func a_spos_attack(mobj) {
+    a_face_target(mobj)
+    let i = 0
+    while i < 3 {
+        const angle = mobj["angle"] + ((random_int(256) - 128) << 18)
+        const damage = (random_int(5) + 1) * 3
+        p_line_attack(mobj, angle, MISSILERANGE, 0, damage)
+        i = i + 1
+    }
+}
+
+func a_troop_attack(mobj) {
+    a_face_target(mobj)
+    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
+    if dist < MELEERANGE {
+        const damage = (random_int(8) + 1) * 3
+        player_damage(damage, mobj)
+    } else {
+        p_spawn_missile(mobj, "MT_TROOPSHOT")
+    }
+}
+
+func a_sarg_attack(mobj) {
+    a_face_target(mobj)
+    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
+    if dist < MELEERANGE {
+        const damage = (random_int(10) + 1) * 4
+        player_damage(damage, mobj)
+    }
+}
+
+func a_head_attack(mobj) {
+    a_face_target(mobj)
+    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
+    if dist < MELEERANGE {
+        const damage = (random_int(6) + 1) * 10
+        player_damage(damage, mobj)
+    } else {
+        p_spawn_missile(mobj, "MT_HEADSHOT")
+    }
+}
+
+func a_skull_attack(mobj) {
+    a_face_target(mobj)
+    mobj["flags"] = mobj["flags"] | MF_SKULLFLY
+    const angle = mobj["angle"]
+    mobj["momx"] = fixed_mul(20 * FRACUNIT, fine_cosine(angle))
+    mobj["momy"] = fixed_mul(20 * FRACUNIT, fine_sine(angle))
+    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
+    const dz = player_viewz - mobj["z"]
+    const slope = if dist != 0 { fixed_div(dz, dist) } else { 0 }
+    mobj["momz"] = fixed_mul(20 * FRACUNIT, slope)
+}
+
+func a_bruis_attack(mobj) {
+    a_face_target(mobj)
+    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
+    if dist < MELEERANGE {
+        const damage = (random_int(8) + 1) * 10
+        player_damage(damage, mobj)
+    } else {
+        p_spawn_missile(mobj, "MT_BRUISERSHOT")
+    }
+}
+
+func a_cyber_attack(mobj) {
+    a_face_target(mobj)
+    p_spawn_missile(mobj, "MT_ROCKET")
+}
+
+func a_spid_attack(mobj) {
+    a_face_target(mobj)
+    let i = 0
+    while i < 3 {
+        const angle = mobj["angle"] + ((random_int(256) - 128) << 18)
+        const damage = (random_int(5) + 1) * 3
+        p_line_attack(mobj, angle, MISSILERANGE, 0, damage)
+        i = i + 1
+    }
+}
+
+func a_pain(mobj) {
+    // pain sound would play here
+}
+
+func a_fall(mobj) {
+    mobj["flags"] = mobj["flags"] & ~MF_SOLID
+}
+
+func a_scream(mobj) {
+    // death sound
+}
+
+func a_xscream(mobj) {
+    // extreme death sound
+}
+
+func check_sight(mobj) {
+    if player_dead { return false }
+    const sector_m = mobj["sector"]
+    if sector_m != null && player_sector != null {
+        if map_check_reject(sector_m["index"], player_sector["index"]) { return false }
+    }
+    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
+    if dist > 2048 * FRACUNIT { return false }
+    true
+}
+
+func mobj_try_walk(mobj) {
+    if mobj["movedir"] == DI_NODIR { return false }
+    const speed = mobj["speed"]
+    const dir = mobj["movedir"]
+    if dir >= 8 { return false }
+    const newx = mobj["x"] + fixed_mul(speed, xspeed[dir])
+    const newy = mobj["y"] + fixed_mul(speed, yspeed[dir])
+    true
+}
+
+func mobj_new_chase_dir(mobj) {
+    const dx = player_x - mobj["x"]
+    const dy = player_y - mobj["y"]
+    let d1 = DI_NODIR
+    let d2 = DI_NODIR
+    if dx > 10 * FRACUNIT { d1 = DI_EAST }
+    else if dx < -10 * FRACUNIT { d1 = DI_WEST }
+    if dy > 10 * FRACUNIT { d2 = DI_NORTH }
+    else if dy < -10 * FRACUNIT { d2 = DI_SOUTH }
+    if d1 != DI_NODIR && d2 != DI_NODIR {
+        const diags = [[DI_NODIR]*3, [DI_NODIR]*3, [DI_NODIR]*3]
+        if d1 == DI_EAST && d2 == DI_NORTH { mobj["movedir"] = DI_NORTHEAST }
+        else if d1 == DI_EAST && d2 == DI_SOUTH { mobj["movedir"] = DI_SOUTHEAST }
+        else if d1 == DI_WEST && d2 == DI_NORTH { mobj["movedir"] = DI_NORTHWEST }
+        else if d1 == DI_WEST && d2 == DI_SOUTH { mobj["movedir"] = DI_SOUTHWEST }
+        else { mobj["movedir"] = d1 }
+    } else if d1 != DI_NODIR {
+        mobj["movedir"] = d1
+    } else if d2 != DI_NODIR {
+        mobj["movedir"] = d2
+    } else {
+        mobj["movedir"] = random_int(8)
+    }
+    mobj["movecount"] = random_int(15) + 5
+}
+
+func p_line_attack(source, angle, range, slope, damage) {
+    const cos_a = fine_cosine(angle)
+    const sin_a = fine_sine(angle)
+    const dx = fixed_mul(range, cos_a)
+    const dy = fixed_mul(range, sin_a)
+    const dist = point_to_dist(source["x"], source["y"], player_x, player_y)
+    if dist < range {
+        const ang_to_player = point_to_angle_2(source["x"], source["y"], player_x, player_y)
+        let diff = ang_to_player - angle
+        while diff > ANG180 { diff = diff - ANG360 }
+        while diff < -ANG180 { diff = diff + ANG360 }
+        if abs(diff) < ANG45 / 2 {
+            player_damage(damage, source)
+        }
+    }
+}
+
+func p_spawn_missile(source, missile_type) {
+    const angle = source["angle"]
+    const speed = 20 * FRACUNIT
+    const mx = fixed_mul(speed, fine_cosine(angle))
+    const my = fixed_mul(speed, fine_sine(angle))
+    const missile = mobj_spawn(source["x"], source["y"] + 32 * FRACUNIT, 0)
+    if missile != null {
+        missile["momx"] = mx
+        missile["momy"] = my
+        missile["angle"] = angle
+        missile["flags"] = MF_MISSILE | MF_NOBLOCKMAP | MF_NOGRAVITY
+    }
+}

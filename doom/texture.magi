@@ -1,0 +1,262 @@
+let tex_palette = []
+let tex_colormaps = []
+let tex_textures = []
+let tex_flats = {}
+let tex_patches = {}
+let tex_pnames = []
+let tex_texture_cache = {}
+let tex_flat_cache = {}
+let tex_sprite_lumps = {}
+
+func texture_init() {
+    texture_load_palette()
+    texture_load_colormaps()
+    texture_load_pnames()
+    texture_load_textures()
+    texture_index_flats()
+    texture_index_sprites()
+}
+
+func texture_load_palette() {
+    const idx = wad_find("PLAYPAL")
+    if idx < 0 { println("ERROR: PLAYPAL not found"); return }
+    const data = wad_read(idx)
+    tex_palette = []
+    let i = 0
+    while i < 256 {
+        const ofs = i * 3
+        tex_palette.push({"r": data[ofs], "g": data[ofs + 1], "b": data[ofs + 2]})
+        i = i + 1
+    }
+}
+
+func texture_load_colormaps() {
+    const idx = wad_find("COLORMAP")
+    if idx < 0 { println("ERROR: COLORMAP not found"); return }
+    const data = wad_read(idx)
+    tex_colormaps = []
+    let m = 0
+    while m < 34 {
+        let cmap = []
+        let i = 0
+        while i < 256 {
+            cmap.push(data[m * 256 + i])
+            i = i + 1
+        }
+        tex_colormaps.push(cmap)
+        m = m + 1
+    }
+}
+
+func texture_load_pnames() {
+    const idx = wad_find("PNAMES")
+    if idx < 0 { println("ERROR: PNAMES not found"); return }
+    const data = wad_read(idx)
+    const count = read_i32(data, 0)
+    tex_pnames = []
+    let i = 0
+    while i < count {
+        tex_pnames.push(read_string(data, 4 + i * 8, 8).upper())
+        i = i + 1
+    }
+}
+
+func texture_load_textures() {
+    tex_textures = []
+    const lump_names = ["TEXTURE1", "TEXTURE2"]
+    for lname in lump_names {
+        const idx = wad_find(lname)
+        if idx < 0 { continue }
+        const data = wad_read(idx)
+        const numtextures = read_i32(data, 0)
+        let i = 0
+        while i < numtextures {
+            const offset = read_i32(data, 4 + i * 4)
+            const name = read_string(data, offset, 8).upper()
+            const width = read_u16(data, offset + 12)
+            const height = read_u16(data, offset + 14)
+            const patchcount = read_u16(data, offset + 20)
+            let patches = []
+            let p = 0
+            while p < patchcount {
+                const pofs = offset + 22 + p * 10
+                patches.push({
+                    "originx": read_i16(data, pofs),
+                    "originy": read_i16(data, pofs + 2),
+                    "patch": read_u16(data, pofs + 4)
+                })
+                p = p + 1
+            }
+            tex_textures.push({
+                "name": name,
+                "width": width,
+                "height": height,
+                "patches": patches
+            })
+            i = i + 1
+        }
+    }
+    println(f"Loaded {len(tex_textures)} textures")
+}
+
+func texture_index_flats() {
+    const range = wad_find_flat_range()
+    if range["start"] < 0 { return }
+    let i = range["start"] + 1
+    while i < range["end"] {
+        const name = wad_lump_name(i)
+        if wad_lump_size(i) == 4096 {
+            tex_flats[name] = i
+        }
+        i = i + 1
+    }
+    println(f"Indexed {len(tex_flats)} flats")
+}
+
+func texture_index_sprites() {
+    const range = wad_find_sprite_range()
+    if range["start"] < 0 { return }
+    let i = range["start"] + 1
+    while i < range["end"] {
+        const name = wad_lump_name(i)
+        tex_sprite_lumps[name] = i
+        i = i + 1
+    }
+    println(f"Indexed {len(tex_sprite_lumps)} sprite lumps")
+}
+
+func texture_find(name) {
+    const uname = name.upper()
+    if uname == "-" || uname == "" { return null }
+    let i = 0
+    while i < len(tex_textures) {
+        if tex_textures[i]["name"] == uname { return tex_textures[i] }
+        i = i + 1
+    }
+    null
+}
+
+func texture_find_index(name) {
+    const uname = name.upper()
+    if uname == "-" || uname == "" { return -1 }
+    let i = 0
+    while i < len(tex_textures) {
+        if tex_textures[i]["name"] == uname { return i }
+        i = i + 1
+    }
+    -1
+}
+
+func texture_get_column(texnum, col) {
+    if texnum < 0 || texnum >= len(tex_textures) { return null }
+    const tex = tex_textures[texnum]
+    const w = tex["width"]
+    const h = tex["height"]
+    const actual_col = ((col % w) + w) % w
+    const cache_key = f"{texnum}_{actual_col}"
+    if tex_texture_cache.has(cache_key) { return tex_texture_cache[cache_key] }
+    let column = []
+    let i = 0
+    while i < h { column.push(0); i = i + 1 }
+    for pdef in tex["patches"] {
+        const pname_idx = pdef["patch"]
+        if pname_idx >= len(tex_pnames) { continue }
+        const pname = tex_pnames[pname_idx]
+        const lump_idx = wad_find(pname)
+        if lump_idx < 0 { continue }
+        const pcol = actual_col - pdef["originx"]
+        if pcol < 0 { continue }
+        const patch_data = wad_read(lump_idx)
+        const patch_width = read_u16(patch_data, 0)
+        if pcol >= patch_width { continue }
+        const col_ofs = read_i32(patch_data, 8 + pcol * 4)
+        let post_ofs = col_ofs
+        while post_ofs < len(patch_data) {
+            const topdelta = patch_data[post_ofs]
+            if topdelta == 255 { break }
+            const post_len = patch_data[post_ofs + 1]
+            let j = 0
+            while j < post_len {
+                const dest_y = topdelta + pdef["originy"] + j
+                if dest_y >= 0 && dest_y < h {
+                    column[dest_y] = patch_data[post_ofs + 3 + j]
+                }
+                j = j + 1
+            }
+            post_ofs = post_ofs + post_len + 4
+        }
+    }
+    tex_texture_cache[cache_key] = column
+    column
+}
+
+func texture_get_flat(name) {
+    const uname = name.upper()
+    if tex_flat_cache.has(uname) { return tex_flat_cache[uname] }
+    if !tex_flats.has(uname) { return null }
+    const lump_idx = tex_flats[uname]
+    const data = wad_read(lump_idx)
+    if len(data) != 4096 { return null }
+    tex_flat_cache[uname] = data
+    data
+}
+
+func texture_get_patch(lump_idx) {
+    if lump_idx < 0 { return null }
+    const data = wad_read(lump_idx)
+    if len(data) < 8 { return null }
+    {
+        "width": read_u16(data, 0),
+        "height": read_u16(data, 2),
+        "leftoffset": read_i16(data, 4),
+        "topoffset": read_i16(data, 6),
+        "data": data
+    }
+}
+
+func texture_draw_patch_column(patch, col, dest, dest_ofs, dest_h, colormap) {
+    if patch == null { return }
+    const data = patch["data"]
+    const w = patch["width"]
+    if col < 0 || col >= w { return }
+    const col_ofs = read_i32(data, 8 + col * 4)
+    let post_ofs = col_ofs
+    while post_ofs < len(data) {
+        const topdelta = data[post_ofs]
+        if topdelta == 255 { return }
+        const length = data[post_ofs + 1]
+        let j = 0
+        while j < length {
+            const y = topdelta + j
+            if y >= 0 && y < dest_h {
+                let px = data[post_ofs + 3 + j]
+                if colormap != null && px < 256 { px = colormap[px] }
+                dest[dest_ofs + y] = px
+            }
+            j = j + 1
+        }
+        post_ofs = post_ofs + length + 4
+    }
+}
+
+func palette_rgb(index) {
+    if index < 0 || index >= 256 { return {"r": 0, "g": 0, "b": 0} }
+    tex_palette[index]
+}
+
+func colormap_index(lightlevel, dist) {
+    let level = lightlevel >> 4
+    if level < 0 { level = 0 }
+    if level >= NUMCOLORMAPS { level = NUMCOLORMAPS - 1 }
+    const diminish = fixed_to_int(dist) >> 4
+    let idx = (NUMCOLORMAPS - 1) - level + diminish
+    if idx < 0 { idx = 0 }
+    if idx >= NUMCOLORMAPS { idx = NUMCOLORMAPS - 1 }
+    idx
+}
+
+func get_colormap(idx) {
+    if idx < 0 { idx = 0 }
+    if idx >= len(tex_colormaps) { idx = len(tex_colormaps) - 1 }
+    tex_colormaps[idx]
+}

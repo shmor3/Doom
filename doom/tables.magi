@@ -1,0 +1,161 @@
+let mobjinfo_table = {}
+
+func tables_init() {
+    mobjinfo_table = {}
+    mobjinfo_register(1, "PLAY", 100, 0, MF_SOLID | MF_SHOOTABLE, 16 * FRACUNIT, 56 * FRACUNIT, 0, 255, 0, -1, -1, -1, -1, 8)
+    mobjinfo_register(3004, "POSS", 20, 0, MF_SOLID | MF_SHOOTABLE | MF_COUNTKILL, 20 * FRACUNIT, 56 * FRACUNIT, 8 * FRACUNIT, 200, 0, -1, 1, 2, 3, 8)
+    mobjinfo_register(9, "SPOS", 30, 0, MF_SOLID | MF_SHOOTABLE | MF_COUNTKILL, 20 * FRACUNIT, 56 * FRACUNIT, 8 * FRACUNIT, 170, 0, -1, 1, 2, 3, 8)
+    mobjinfo_register(3001, "TROO", 60, 0, MF_SOLID | MF_SHOOTABLE | MF_COUNTKILL, 20 * FRACUNIT, 56 * FRACUNIT, 8 * FRACUNIT, 200, 0, 4, 1, 2, 3, 8)
+    mobjinfo_register(3002, "SARG", 150, 0, MF_SOLID | MF_SHOOTABLE | MF_COUNTKILL, 30 * FRACUNIT, 56 * FRACUNIT, 10 * FRACUNIT, 180, 0, 4, -1, 2, 3, 8)
+    mobjinfo_register(3006, "BOSS", 1000, 0, MF_SOLID | MF_SHOOTABLE | MF_COUNTKILL, 24 * FRACUNIT, 64 * FRACUNIT, 8 * FRACUNIT, 50, 0, 4, 1, 2, 3, 8)
+    mobjinfo_register(3005, "HEAD", 400, 0, MF_SOLID | MF_SHOOTABLE | MF_FLOAT | MF_NOGRAVITY | MF_COUNTKILL, 31 * FRACUNIT, 56 * FRACUNIT, 10 * FRACUNIT, 128, 0, -1, 1, 2, 3, 8)
+    mobjinfo_register(3003, "BOSS", 500, 0, MF_SOLID | MF_SHOOTABLE | MF_COUNTKILL, 24 * FRACUNIT, 64 * FRACUNIT, 8 * FRACUNIT, 50, 0, 4, 1, 2, 3, 8)
+    mobjinfo_register(16, "CYBR", 4000, 0, MF_SOLID | MF_SHOOTABLE | MF_COUNTKILL, 40 * FRACUNIT, 110 * FRACUNIT, 16 * FRACUNIT, 0, 0, -1, 1, 2, 3, 8)
+    mobjinfo_register(7, "SPID", 3000, 0, MF_SOLID | MF_SHOOTABLE | MF_COUNTKILL, 128 * FRACUNIT, 100 * FRACUNIT, 12 * FRACUNIT, 0, 0, -1, 1, 2, 3, 8)
+    mobjinfo_register(3004 + 10000, "SKUL", 100, 0, MF_SOLID | MF_SHOOTABLE | MF_FLOAT | MF_NOGRAVITY | MF_COUNTKILL, 16 * FRACUNIT, 56 * FRACUNIT, 20 * FRACUNIT, 256, 0, 4, -1, 2, 3, 8)
+    mobjinfo_register(2007, "CLIP", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2008, "SHEL", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2010, "ROCK", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2047, "CELL", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2001, "SHOT", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2002, "MGUN", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2003, "LAUN", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2004, "PLAS", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2006, "BFUG", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2005, "CSAW", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2011, "STIM", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2012, "MEDI", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2014, "BON1", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2015, "BON2", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2018, "ARM1", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2019, "ARM2", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(5, "BKEY", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(6, "YKEY", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(13, "RKEY", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(40, "BSKU", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(39, "YSKU", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(38, "RSKU", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2035, "BAR1", 20, 0, MF_SOLID | MF_SHOOTABLE | MF_NOBLOOD, 10 * FRACUNIT, 42 * FRACUNIT, 0, 0, 0, -1, -1, 2, 3, 0)
+    mobjinfo_register(2028, "COLU", 0, 0, MF_SOLID, 16 * FRACUNIT, 48 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(30, "COL1", 0, 0, MF_SOLID, 16 * FRACUNIT, 48 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(31, "COL2", 0, 0, MF_SOLID, 16 * FRACUNIT, 48 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(32, "COL3", 0, 0, MF_SOLID, 16 * FRACUNIT, 48 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(33, "COL4", 0, 0, MF_SOLID, 16 * FRACUNIT, 48 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(34, "CAND", 0, 0, 0, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(44, "TBLU", 0, 0, MF_SOLID, 16 * FRACUNIT, 48 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(45, "TGRN", 0, 0, MF_SOLID, 16 * FRACUNIT, 48 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(46, "TRED", 0, 0, MF_SOLID, 16 * FRACUNIT, 48 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(47, "SMIT", 0, 0, MF_SOLID, 16 * FRACUNIT, 48 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(48, "ELEC", 0, 0, MF_SOLID, 16 * FRACUNIT, 128 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2013, "SOUL", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2022, "PINV", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2023, "PSTR", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2024, "PINS", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2025, "SUIT", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2026, "PMAP", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2045, "PVIS", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(8, "BPAK", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    game_states_init()
+}
+
+func mobjinfo_register(doomednum, sprite, health, reactiontime, flags, radius, height, speed, painchance, damage, meleestate, missilestate, deathstate, painstate, mass) {
+    mobjinfo_table[to_string(doomednum)] = {
+        "doomednum": doomednum,
+        "sprite": sprite,
+        "spawnhealth": health,
+        "reactiontime": reactiontime,
+        "flags": flags,
+        "radius": radius,
+        "height": height,
+        "speed": speed,
+        "painchance": painchance,
+        "damage": damage,
+        "meleestate": meleestate,
+        "missilestate": missilestate,
+        "deathstate": deathstate,
+        "painstate": painstate,
+        "mass": mass,
+        "spawnstate": 0,
+        "seestate": 1,
+        "xdeathstate": -1,
+        "raisestate": -1,
+        "seesound": "",
+        "attacksound": "",
+        "painsound": "",
+        "deathsound": "",
+        "activesound": ""
+    }
+}
+
+func mobjinfo_get(doomednum) {
+    const key = to_string(doomednum)
+    if mobjinfo_table.has(key) { return mobjinfo_table[key] }
+    null
+}
+
+func game_states_init() {
+    game_states = []
+    let i = 0
+    while i < 20 {
+        game_states.push({
+            "sprite": null,
+            "frame": 0,
+            "tics": -1,
+            "action": null,
+            "nextstate": -1
+        })
+        i = i + 1
+    }
+    game_states[0] = {"sprite": "PLAY", "frame": 0, "tics": -1, "action": null, "nextstate": 0}
+    game_states[1] = {"sprite": "PLAY", "frame": 0, "tics": 4, "action": a_look, "nextstate": 1}
+    game_states[2] = {"sprite": "PLAY", "frame": 0, "tics": 10, "action": a_chase, "nextstate": 2}
+    game_states[3] = {"sprite": "PLAY", "frame": 0, "tics": -1, "action": a_fall, "nextstate": -1}
+    game_states[4] = {"sprite": "PLAY", "frame": 0, "tics": 3, "action": null, "nextstate": 5}
+    game_states[5] = {"sprite": "PLAY", "frame": 1, "tics": 3, "action": null, "nextstate": 4}
+}
+
+func pickup_touch(mobj) {
+    if (mobj["flags"] & MF_SPECIAL) == 0 { return }
+    const dist = point_to_dist(player_x, player_y, mobj["x"], mobj["y"])
+    if dist > 32 * FRACUNIT { return }
+    const dtype = mobj["type"]
+    let picked = false
+    match dtype {
+        2007 => { picked = player_give_ammo(am_clip, 10) },
+        2008 => { picked = player_give_ammo(am_shell, 4) },
+        2010 => { picked = player_give_ammo(am_misl, 1) },
+        2047 => { picked = player_give_ammo(am_cell, 20) },
+        2001 => { picked = player_give_weapon(wp_shotgun); player_give_ammo(am_shell, 8) },
+        2002 => { picked = player_give_weapon(wp_chaingun); player_give_ammo(am_clip, 20) },
+        2003 => { picked = player_give_weapon(wp_missile); player_give_ammo(am_misl, 2) },
+        2004 => { picked = player_give_weapon(wp_plasma); player_give_ammo(am_cell, 40) },
+        2006 => { picked = player_give_weapon(wp_bfg); player_give_ammo(am_cell, 40) },
+        2005 => { picked = player_give_weapon(wp_chainsaw) },
+        2011 => { picked = player_give_health(10) },
+        2012 => { picked = player_give_health(25) },
+        2013 => { picked = player_give_health(100); player_health = 200 },
+        2014 => { player_health = player_health + 1; if player_health > 200 { player_health = 200 }; picked = true },
+        2015 => { player_armor = player_armor + 1; if player_armor > 200 { player_armor = 200 }; picked = true },
+        2018 => { picked = player_give_armor(1, 100) },
+        2019 => { picked = player_give_armor(2, 200) },
+        5 => { player_give_key(it_bluecard); picked = true },
+        6 => { player_give_key(it_yellowcard); picked = true },
+        13 => { player_give_key(it_redcard); picked = true },
+        40 => { player_give_key(it_blueskull); picked = true },
+        39 => { player_give_key(it_yellowskull); picked = true },
+        38 => { player_give_key(it_redskull); picked = true },
+        8 => { player_maxammo = [400, 100, 600, 100]; picked = true },
+        2022 => { player_powers[pw_invulnerability] = 30 * TICRATE; picked = true },
+        2023 => { player_powers[pw_strength] = 1; player_give_health(100); picked = true },
+        2024 => { player_powers[pw_invisibility] = 60 * TICRATE; picked = true },
+        2025 => { player_powers[pw_ironfeet] = 60 * TICRATE; picked = true },
+        2026 => { player_powers[pw_allmap] = 1; picked = true },
+        2045 => { player_powers[pw_infrared] = 120 * TICRATE; picked = true },
+        _ => {}
+    }
+    if picked {
+        if (mobj["flags"] & MF_COUNTITEM) != 0 { player_itemcount = player_itemcount + 1 }
+        mobj_remove(mobj)
+        player_bonuscount = 6
+    }
+}

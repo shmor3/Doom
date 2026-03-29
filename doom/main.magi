@@ -1,0 +1,208 @@
+let game_state = GS_DEMOSCREEN
+let game_episode = 1
+let game_mission = 1
+let game_skill = sk_medium
+let game_tic = 0
+let game_running = true
+let game_window = null
+let game_level_time = 0
+
+let key_states = {}
+
+func main() {
+    println("DOOM - MAGI Engine")
+    println("Loading...")
+    math_init()
+    tables_init()
+    const wad_path = if len(process_args()) > 0 { process_args()[0] } else { "DOOM1.WAD" }
+    if !wad_open(wad_path) {
+        println("Failed to load WAD file. Usage: magi run doom/main.magi <path/to/DOOM1.WAD>")
+        return
+    }
+    texture_init()
+    render_init()
+    hud_init()
+    doors_init()
+    sound_init()
+    game_window = sdl_init("DOOM", WINDOWWIDTH, WINDOWHEIGHT)
+    if game_window == null {
+        println("ERROR: Failed to initialize SDL2 window")
+        return
+    }
+    println("DOOM ready.")
+    game_new(1, 1, sk_medium)
+    game_loop()
+    sound_shutdown()
+    sdl_destroy(game_window)
+}
+
+func game_new(episode, mission, skill) {
+    game_episode = episode
+    game_mission = mission
+    game_skill = skill
+    game_state = GS_LEVEL
+    game_level_time = 0
+    map_load(episode, mission)
+    things_spawn_map()
+    music_start_level(episode, mission)
+    println(f"Starting E{episode}M{mission}")
+}
+
+func game_loop() {
+    let last_tic_time = sdl_ticks(game_window)
+    let tic_accumulator = 0
+    const tic_ms = 1000 / TICRATE
+
+    while game_running {
+        const now = sdl_ticks(game_window)
+        tic_accumulator = tic_accumulator + (now - last_tic_time)
+        last_tic_time = now
+
+        game_process_events()
+
+        while tic_accumulator >= tic_ms {
+            game_ticker()
+            tic_accumulator = tic_accumulator - tic_ms
+            game_tic = game_tic + 1
+        }
+
+        game_render()
+        render_blit(game_window)
+        sdl_present(game_window)
+
+        const frame_time = sdl_ticks(game_window) - now
+        if frame_time < 16 { sdl_delay(16 - frame_time) }
+    }
+}
+
+func game_process_events() {
+    let event = sdl_poll_event(game_window)
+    while event != null {
+        const etype = event["type"]
+        if etype == EVT_QUIT { game_running = false }
+        if etype == EVT_KEYDOWN {
+            const sc = event["scancode"]
+            key_states[to_string(sc)] = true
+            game_key_down(sc)
+        }
+        if etype == EVT_KEYUP {
+            const sc = event["scancode"]
+            key_states[to_string(sc)] = false
+        }
+        event = sdl_poll_event(game_window)
+    }
+}
+
+func key_pressed(scancode) {
+    const k = to_string(scancode)
+    if key_states.has(k) { key_states[k] } else { false }
+}
+
+func game_key_down(sc) {
+    if sc == SC_ESCAPE {
+        game_running = false
+    }
+    if sc == SC_TAB {
+        automap_toggle()
+    }
+    if sc == SC_SPACE || sc == SC_E {
+        player_using = true
+    }
+    if sc >= SC_1 && sc <= SC_7 {
+        const wp = sc - SC_1
+        if wp < NUMWEAPONS && player_weapons[wp] {
+            player_pendingweapon = wp
+        }
+    }
+}
+
+func game_build_cmd() {
+    let cmd = {"forward": 0, "side": 0, "turn": 0, "run": false, "fire": false}
+    if key_pressed(SC_W) || key_pressed(SC_UP) { cmd["forward"] = 1 }
+    if key_pressed(SC_S) || key_pressed(SC_DOWN) { cmd["forward"] = -1 }
+    if key_pressed(SC_A) { cmd["side"] = -1 }
+    if key_pressed(SC_D) { cmd["side"] = 1 }
+    if key_pressed(SC_LEFT) { cmd["turn"] = ANG45 / 4 }
+    if key_pressed(SC_RIGHT) { cmd["turn"] = -(ANG45 / 4) }
+    if key_pressed(SC_LSHIFT) { cmd["run"] = true }
+    if key_pressed(SC_LCTRL) { cmd["fire"] = true }
+    cmd
+}
+
+func game_ticker() {
+    match game_state {
+        GS_LEVEL => {
+            const cmd = game_build_cmd()
+            player_attacking = cmd["fire"]
+            player_think(cmd)
+            things_run_thinkers()
+            doors_run_thinkers()
+            weapon_tick()
+            game_check_pickups()
+            game_check_linedef_triggers()
+            sound_update()
+            game_level_time = game_level_time + 1
+        },
+        GS_INTERMISSION => {
+            if key_pressed(SC_RETURN) || key_pressed(SC_SPACE) {
+                game_mission = game_mission + 1
+                if game_mission > 9 { game_mission = 1; game_episode = game_episode + 1 }
+                if game_episode > 3 { game_running = false }
+                else { game_new(game_episode, game_mission, game_skill) }
+            }
+        },
+        _ => {}
+    }
+}
+
+func game_render() {
+    match game_state {
+        GS_LEVEL => {
+            if hud_automap {
+                automap_draw()
+            } else {
+                render_player_view()
+                things_add_vissprites()
+                r_draw_vissprites()
+            }
+            hud_draw()
+        },
+        GS_INTERMISSION => {
+            intermission_draw(game_episode, game_mission - 1, player_killcount, player_itemcount, player_secretcount, game_level_time / TICRATE)
+        },
+        _ => {
+            render_clear_fb()
+        }
+    }
+}
+
+func game_check_pickups() {
+    for mobj in mobj_list {
+        if (mobj["flags"] & MF_SPECIAL) != 0 {
+            pickup_touch(mobj)
+        }
+    }
+}
+
+func game_check_linedef_triggers() {
+    let i = 0
+    while i < map_num_linedefs {
+        const line = map_linedefs[i]
+        if line["special"] == 0 { i = i + 1; continue }
+        const flags = line["flags"]
+        const side1 = point_on_side(player_x - player_momx, player_y - player_momy,
+                                     line["v1"]["x"], line["v1"]["y"], line["dx"], line["dy"])
+        const side2 = point_on_side(player_x, player_y,
+                                     line["v1"]["x"], line["v1"]["y"], line["dx"], line["dy"])
+        if side1 != side2 {
+            doors_walk_line(line)
+        }
+        i = i + 1
+    }
+}
+
+func game_level_complete() {
+    game_state = GS_INTERMISSION
+}
+
+main()

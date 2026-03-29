@@ -1,0 +1,262 @@
+let player_x = 0
+let player_y = 0
+let player_z = 0
+let player_angle = 0
+let player_viewz = 0
+let player_momx = 0
+let player_momy = 0
+let player_health = 100
+let player_armor = 0
+let player_armortype = 0
+let player_ammo = [50, 0, 0, 0]
+let player_maxammo = [200, 50, 300, 50]
+let player_weapons = [true, true, false, false, false, false, false, false, false]
+let player_readyweapon = wp_pistol
+let player_pendingweapon = wp_pistol
+let player_keys = [false, false, false, false, false, false]
+let player_powers = [0, 0, 0, 0, 0, 0]
+let player_cheats = 0
+let player_killcount = 0
+let player_itemcount = 0
+let player_secretcount = 0
+let player_damagecount = 0
+let player_bonuscount = 0
+let player_extralight = 0
+let player_attacking = false
+let player_using = false
+let player_running = false
+let player_sector = null
+let player_floorz = 0
+let player_ceilingz = 0
+let player_refire = 0
+let player_dead = false
+let player_viewheight = VIEWHEIGHT_FRAC
+let player_deltaviewheight = 0
+
+func player_spawn(x, y, angle) {
+    player_x = x
+    player_y = y
+    player_z = 0
+    player_angle = angle * ANG45 / 45
+    player_momx = 0
+    player_momy = 0
+    player_health = 100
+    player_armor = 0
+    player_armortype = 0
+    player_ammo = [50, 0, 0, 0]
+    player_maxammo = [200, 50, 300, 50]
+    player_weapons = [true, true, false, false, false, false, false, false, false]
+    player_readyweapon = wp_pistol
+    player_pendingweapon = wp_pistol
+    player_keys = [false, false, false, false, false, false]
+    player_powers = [0, 0, 0, 0, 0, 0]
+    player_killcount = 0
+    player_itemcount = 0
+    player_secretcount = 0
+    player_damagecount = 0
+    player_bonuscount = 0
+    player_extralight = 0
+    player_dead = false
+    player_refire = 0
+    player_viewheight = VIEWHEIGHT_FRAC
+    player_deltaviewheight = 0
+    const ss_idx = map_get_subsector(player_x, player_y)
+    if ss_idx < map_num_subsectors {
+        player_sector = map_subsectors[ss_idx]["sector"]
+        if player_sector != null {
+            player_floorz = player_sector["floorheight"]
+            player_ceilingz = player_sector["ceilingheight"]
+        }
+    }
+    player_z = player_floorz
+    player_viewz = player_z + player_viewheight
+}
+
+func player_think(cmd) {
+    if player_dead { return }
+    player_move(cmd)
+    player_calc_height()
+    if player_damagecount > 0 { player_damagecount = player_damagecount - 1 }
+    if player_bonuscount > 0 { player_bonuscount = player_bonuscount - 1 }
+    let i = 0
+    while i < NUMPOWERS {
+        if player_powers[i] > 0 { player_powers[i] = player_powers[i] - 1 }
+        i = i + 1
+    }
+    if player_using { player_use_lines() }
+}
+
+func player_move(cmd) {
+    const forwardmove = cmd["forward"]
+    const sidemove = cmd["side"]
+    const angleturn = cmd["turn"]
+    player_running = cmd["run"]
+    player_angle = player_angle + angleturn
+    while player_angle >= ANG360 { player_angle = player_angle - ANG360 }
+    while player_angle < 0 { player_angle = player_angle + ANG360 }
+    if forwardmove != 0 {
+        const thrust = if player_running { forwardmove * 2 } else { forwardmove }
+        player_momx = player_momx + fixed_mul(thrust << 13, fine_cosine(player_angle))
+        player_momy = player_momy + fixed_mul(thrust << 13, fine_sine(player_angle))
+    }
+    if sidemove != 0 {
+        const thrust = if player_running { sidemove * 2 } else { sidemove }
+        const sideangle = (player_angle - ANG90 + ANG360) % ANG360
+        player_momx = player_momx + fixed_mul(thrust << 13, fine_cosine(sideangle))
+        player_momy = player_momy + fixed_mul(thrust << 13, fine_sine(sideangle))
+    }
+    const newx = player_x + player_momx
+    const newy = player_y + player_momy
+    if player_try_move(newx, newy) {
+        player_x = newx
+        player_y = newy
+    } else {
+        if player_try_move(newx, player_y) {
+            player_x = newx
+            player_momy = 0
+        } else if player_try_move(player_x, newy) {
+            player_y = newy
+            player_momx = 0
+        } else {
+            player_momx = 0
+            player_momy = 0
+        }
+    }
+    player_momx = fixed_mul(player_momx, FRICTION)
+    player_momy = fixed_mul(player_momy, FRICTION)
+    if abs(player_momx) < STOPSPEED { player_momx = 0 }
+    if abs(player_momy) < STOPSPEED { player_momy = 0 }
+    const ss_idx = map_get_subsector(player_x, player_y)
+    if ss_idx < map_num_subsectors {
+        player_sector = map_subsectors[ss_idx]["sector"]
+        if player_sector != null {
+            player_floorz = player_sector["floorheight"]
+            player_ceilingz = player_sector["ceilingheight"]
+        }
+    }
+    if player_z < player_floorz {
+        player_z = player_floorz
+    }
+}
+
+func player_try_move(newx, newy) {
+    const radius = 16 << FRACBITS
+    let i = 0
+    while i < map_num_linedefs {
+        const line = map_linedefs[i]
+        const lx1 = line["v1"]["x"]
+        const ly1 = line["v1"]["y"]
+        const lx2 = line["v2"]["x"]
+        const ly2 = line["v2"]["y"]
+        if newx + radius < line["bbox"]["left"] || newx - radius > line["bbox"]["right"] ||
+           newy + radius < line["bbox"]["bottom"] || newy - radius > line["bbox"]["top"] {
+            i = i + 1; continue
+        }
+        const side1 = point_on_side(player_x, player_y, lx1, ly1, line["dx"], line["dy"])
+        const side2 = point_on_side(newx, newy, lx1, ly1, line["dx"], line["dy"])
+        if side1 == side2 { i = i + 1; continue }
+        if (line["flags"] & ML_BLOCKING) != 0 { return false }
+        if line["backsector"] == null { return false }
+        const front = line["frontsector"]
+        const back = line["backsector"]
+        if front == null || back == null { return false }
+        const floor_h = if back["floorheight"] > front["floorheight"] { back["floorheight"] } else { front["floorheight"] }
+        const ceil_h = if back["ceilingheight"] < front["ceilingheight"] { back["ceilingheight"] } else { front["ceilingheight"] }
+        if ceil_h - floor_h < (56 << FRACBITS) { return false }
+        if floor_h - player_z > MAXSTEP { return false }
+        i = i + 1
+    }
+    true
+}
+
+func player_calc_height() {
+    player_viewheight = player_viewheight + player_deltaviewheight
+    if player_viewheight > VIEWHEIGHT_FRAC {
+        player_viewheight = VIEWHEIGHT_FRAC
+        player_deltaviewheight = 0
+    }
+    if player_viewheight < VIEWHEIGHT_FRAC / 2 {
+        player_viewheight = VIEWHEIGHT_FRAC / 2
+        if player_deltaviewheight <= 0 { player_deltaviewheight = 1 }
+    }
+    player_viewz = player_z + player_viewheight
+    if player_viewz > player_ceilingz - 4 * FRACUNIT {
+        player_viewz = player_ceilingz - 4 * FRACUNIT
+    }
+}
+
+func player_use_lines() {
+    const useangle = player_angle
+    const x2 = player_x + fixed_mul(USERANGE, fine_cosine(useangle))
+    const y2 = player_y + fixed_mul(USERANGE, fine_sine(useangle))
+    let i = 0
+    while i < map_num_linedefs {
+        const line = map_linedefs[i]
+        if line["special"] == 0 { i = i + 1; continue }
+        const side1 = point_on_side(player_x, player_y, line["v1"]["x"], line["v1"]["y"], line["dx"], line["dy"])
+        const side2 = point_on_side(x2, y2, line["v1"]["x"], line["v1"]["y"], line["dx"], line["dy"])
+        if side1 != side2 {
+            doors_use_line(line, side1)
+        }
+        i = i + 1
+    }
+    player_using = false
+}
+
+func player_damage(damage, source) {
+    if player_dead { return }
+    if player_powers[pw_invulnerability] > 0 { return }
+    if player_armortype > 0 {
+        let saved = damage / 3
+        if player_armortype == 1 { saved = damage / 3 }
+        if saved > player_armor { saved = player_armor }
+        player_armor = player_armor - saved
+        damage = damage - saved
+        if player_armor <= 0 { player_armortype = 0 }
+    }
+    player_health = player_health - damage
+    player_damagecount = player_damagecount + damage
+    if player_damagecount > 100 { player_damagecount = 100 }
+    if player_health <= 0 {
+        player_health = 0
+        player_dead = true
+    }
+}
+
+func player_give_weapon(weapon) {
+    if weapon < 0 || weapon >= NUMWEAPONS { return false }
+    if player_weapons[weapon] { return false }
+    player_weapons[weapon] = true
+    player_pendingweapon = weapon
+    true
+}
+
+func player_give_ammo(ammotype, count) {
+    if ammotype < 0 || ammotype >= NUMAMMO { return false }
+    if player_ammo[ammotype] >= player_maxammo[ammotype] { return false }
+    player_ammo[ammotype] = player_ammo[ammotype] + count
+    if player_ammo[ammotype] > player_maxammo[ammotype] {
+        player_ammo[ammotype] = player_maxammo[ammotype]
+    }
+    true
+}
+
+func player_give_key(key) {
+    if key < 0 || key >= NUMCARDS { return }
+    player_keys[key] = true
+    player_bonuscount = 6
+}
+
+func player_give_health(amount) {
+    if player_health >= MAXHEALTH { return false }
+    player_health = player_health + amount
+    if player_health > MAXHEALTH { player_health = MAXHEALTH }
+    true
+}
+
+func player_give_armor(armortype, amount) {
+    if player_armor >= amount { return false }
+    player_armortype = armortype
+    player_armor = amount
+    true
+}

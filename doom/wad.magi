@@ -1,0 +1,186 @@
+let wad_data = []
+let wad_lumps = []
+let wad_numlumps = 0
+
+func wad_open(path) {
+    wad_data = fs_read_bytes(path)
+    if wad_data == null || len(wad_data) < 12 {
+        println(f"ERROR: Cannot read WAD file: {path}")
+        return false
+    }
+    const id = chr(wad_data[0]) + chr(wad_data[1]) + chr(wad_data[2]) + chr(wad_data[3])
+    if id != "IWAD" && id != "PWAD" {
+        println(f"ERROR: Not a WAD file (got {id})")
+        return false
+    }
+    wad_numlumps = read_i32(wad_data, 4)
+    const infotableofs = read_i32(wad_data, 8)
+    wad_lumps = []
+    let i = 0
+    while i < wad_numlumps {
+        const ofs = infotableofs + i * 16
+        const filepos = read_i32(wad_data, ofs)
+        const size = read_i32(wad_data, ofs + 4)
+        let name = ""
+        let j = 0
+        while j < 8 {
+            const c = wad_data[ofs + 8 + j]
+            if c == 0 { j = 8 } else { name = name + chr(c) }
+            j = j + 1
+        }
+        wad_lumps.push({"name": name.upper(), "filepos": filepos, "size": size, "index": i})
+        i = i + 1
+    }
+    println(f"WAD loaded: {id}, {wad_numlumps} lumps")
+    true
+}
+
+func wad_find(name) {
+    const uname = name.upper()
+    let i = wad_numlumps - 1
+    while i >= 0 {
+        if wad_lumps[i]["name"] == uname { return i }
+        i = i - 1
+    }
+    -1
+}
+
+func wad_find_after(name, after) {
+    const uname = name.upper()
+    let i = after + 1
+    while i < wad_numlumps {
+        if wad_lumps[i]["name"] == uname { return i }
+        i = i + 1
+    }
+    -1
+}
+
+func wad_read(index) {
+    if index < 0 || index >= wad_numlumps { return [] }
+    const lump = wad_lumps[index]
+    const start = lump["filepos"]
+    const sz = lump["size"]
+    let result = []
+    let i = 0
+    while i < sz {
+        result.push(wad_data[start + i])
+        i = i + 1
+    }
+    result
+}
+
+func wad_lump_size(index) {
+    if index < 0 || index >= wad_numlumps { return 0 }
+    wad_lumps[index]["size"]
+}
+
+func wad_lump_name(index) {
+    if index < 0 || index >= wad_numlumps { return "" }
+    wad_lumps[index]["name"]
+}
+
+func read_i16(data, offset) {
+    if offset + 1 >= len(data) { return 0 }
+    let val = data[offset] | (data[offset + 1] << 8)
+    if val >= 32768 { val = val - 65536 }
+    val
+}
+
+func read_u16(data, offset) {
+    if offset + 1 >= len(data) { return 0 }
+    data[offset] | (data[offset + 1] << 8)
+}
+
+func read_i32(data, offset) {
+    if offset + 3 >= len(data) { return 0 }
+    let val = data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24)
+    val
+}
+
+func read_string(data, offset, maxlen) {
+    let s = ""
+    let i = 0
+    while i < maxlen {
+        if offset + i >= len(data) { return s }
+        const c = data[offset + i]
+        if c == 0 { return s }
+        s = s + chr(c)
+        i = i + 1
+    }
+    s
+}
+
+func chr(code) {
+    if code >= 65 && code <= 90 { return char_at("ABCDEFGHIJKLMNOPQRSTUVWXYZ", code - 65) }
+    if code >= 97 && code <= 122 { return char_at("abcdefghijklmnopqrstuvwxyz", code - 97) }
+    if code >= 48 && code <= 57 { return char_at("0123456789", code - 48) }
+    if code == 32 { return " " }
+    if code == 45 { return "-" }
+    if code == 95 { return "_" }
+    if code == 46 { return "." }
+    if code == 47 { return "/" }
+    "?"
+}
+
+func wad_find_map_lump(episode, mission, lumpname) {
+    const mapname = f"E{episode}M{mission}"
+    const map_idx = wad_find(mapname)
+    if map_idx < 0 { return -1 }
+    wad_find_after(lumpname, map_idx)
+}
+
+func wad_find_flat_range() {
+    const f_start = wad_find("F_START")
+    const f_end = wad_find("F_END")
+    if f_start < 0 || f_end < 0 { return {"start": -1, "end": -1} }
+    {"start": f_start, "end": f_end}
+}
+
+func wad_find_sprite_range() {
+    const s_start = wad_find("S_START")
+    const s_end = wad_find("S_END")
+    if s_start < 0 || s_end < 0 { return {"start": -1, "end": -1} }
+    {"start": s_start, "end": s_end}
+}
+
+func wad_find_between(start_name, end_name) {
+    const s = wad_find(start_name)
+    const e = wad_find(end_name)
+    if s < 0 || e < 0 { return [] }
+    let result = []
+    let i = s + 1
+    while i < e {
+        result.push(i)
+        i = i + 1
+    }
+    result
+}
+
+func fs_read_bytes(path) {
+    const raw = fs_read(path)
+    if raw == null { return null }
+    let bytes = []
+    let i = 0
+    while i < len(raw) {
+        bytes.push(char_code_at(raw, i))
+        i = i + 1
+    }
+    bytes
+}
+
+func char_code_at(s, i) {
+    if i >= len(s) { return 0 }
+    const c = s.char_at(i)
+    if c == "" { return 0 }
+    to_byte(c)
+}
+
+func to_byte(c) {
+    const chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    let i = 0
+    while i < len(chars) {
+        if chars.char_at(i) == c { return 32 + i }
+        i = i + 1
+    }
+    0
+}

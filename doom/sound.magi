@@ -1,0 +1,143 @@
+let snd_channels = []
+let snd_sfx_cache = {}
+let snd_stream = null
+let snd_music_playing = false
+const SND_SAMPLERATE = 11025
+const SND_MAXCHANNELS = 8
+
+func sound_init() {
+    snd_channels = []
+    let i = 0
+    while i < SND_MAXCHANNELS {
+        snd_channels.push({"active": false, "data": null, "pos": 0, "vol": 255, "pan": 128, "priority": 0})
+        i = i + 1
+    }
+    snd_stream = audio_stream_new(SND_SAMPLERATE)
+}
+
+func sound_shutdown() {
+    if snd_stream != null {
+        audio_drain(snd_stream)
+        audio_close(snd_stream)
+        snd_stream = null
+    }
+}
+
+func sound_play(name, x, y, priority) {
+    const sfx = sound_load(name)
+    if sfx == null { return }
+    const dist = point_to_dist(player_x, player_y, x, y)
+    if dist > 1200 * FRACUNIT { return }
+    const vol = 255 - fixed_to_int(dist) * 255 / 1200
+    if vol <= 0 { return }
+    const angle = point_to_angle_2(player_x, player_y, x, y)
+    let diff = angle - player_angle
+    while diff > ANG180 { diff = diff - ANG360 }
+    while diff < -ANG180 { diff = diff + ANG360 }
+    const pan = 128 + fixed_to_int(fixed_mul(diff / (ANG90 / 128), 128 << FRACBITS))
+    const clamped_pan = clamp(pan, 0, 255)
+    let best_chan = -1
+    let best_prio = priority + 1
+    let i = 0
+    while i < SND_MAXCHANNELS {
+        if !snd_channels[i]["active"] { best_chan = i; i = SND_MAXCHANNELS; continue }
+        if snd_channels[i]["priority"] < best_prio {
+            best_prio = snd_channels[i]["priority"]
+            best_chan = i
+        }
+        i = i + 1
+    }
+    if best_chan < 0 { return }
+    snd_channels[best_chan] = {
+        "active": true,
+        "data": sfx,
+        "pos": 0,
+        "vol": vol,
+        "pan": clamped_pan,
+        "priority": priority
+    }
+}
+
+func sound_play_global(name) {
+    sound_play(name, player_x, player_y, 200)
+}
+
+func sound_load(name) {
+    const uname = name.upper()
+    if snd_sfx_cache.has(uname) { return snd_sfx_cache[uname] }
+    const lump_name = "DS" + uname
+    const idx = wad_find(lump_name)
+    if idx < 0 { return null }
+    const data = wad_read(idx)
+    if len(data) < 8 { return null }
+    const format = read_u16(data, 0)
+    const samplerate = read_u16(data, 2)
+    const numsamples = read_i32(data, 4)
+    if format != 3 { return null }
+    let samples = []
+    let i = 0
+    while i < numsamples && (8 + i) < len(data) {
+        samples.push(data[8 + i])
+        i = i + 1
+    }
+    snd_sfx_cache[uname] = samples
+    samples
+}
+
+func sound_update() {
+    if snd_stream == null { return }
+    let mix_buf = []
+    const chunk_size = SND_SAMPLERATE / TICRATE
+    let s = 0
+    while s < chunk_size {
+        let left = 0
+        let right = 0
+        let c = 0
+        while c < SND_MAXCHANNELS {
+            const ch = snd_channels[c]
+            if ch["active"] && ch["data"] != null {
+                const pos = ch["pos"]
+                if pos < len(ch["data"]) {
+                    const sample = (ch["data"][pos] - 128) * ch["vol"] / 255
+                    const lpan = 255 - ch["pan"]
+                    const rpan = ch["pan"]
+                    left = left + sample * lpan / 255
+                    right = right + sample * rpan / 255
+                    ch["pos"] = pos + 1
+                } else {
+                    ch["active"] = false
+                }
+            }
+            c = c + 1
+        }
+        left = clamp(left, -128, 127)
+        right = clamp(right, -128, 127)
+        mix_buf.push(left * 256)
+        mix_buf.push(right * 256)
+        s = s + 1
+    }
+    if len(mix_buf) > 0 {
+        audio_write_samples(snd_stream, mix_buf)
+    }
+}
+
+func music_start(name) {
+    const lump_name = "D_" + name.upper()
+    const idx = wad_find(lump_name)
+    if idx < 0 { return }
+    snd_music_playing = true
+}
+
+func music_stop() {
+    snd_music_playing = false
+}
+
+const level_music = [
+    "E1M1", "E1M2", "E1M3", "E1M4", "E1M5", "E1M6", "E1M7", "E1M8", "E1M9"
+]
+
+func music_start_level(episode, mission) {
+    if episode == 1 && mission >= 1 && mission <= 9 {
+        music_start(level_music[mission - 1])
+    }
+}

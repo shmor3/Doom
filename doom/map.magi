@@ -1,0 +1,303 @@
+let map_vertexes = []
+let map_linedefs = []
+let map_sidedefs = []
+let map_sectors = []
+let map_segs = []
+let map_subsectors = []
+let map_nodes = []
+let map_things = []
+let map_blockmap = null
+let map_reject = []
+let map_num_sectors = 0
+let map_num_lines = 0
+let map_num_sides = 0
+let map_num_segs = 0
+let map_num_subsectors = 0
+let map_num_nodes = 0
+let map_num_vertexes = 0
+let map_num_things = 0
+
+func map_load(episode, mission) {
+    map_load_vertexes(episode, mission)
+    map_load_sectors(episode, mission)
+    map_load_sidedefs(episode, mission)
+    map_load_linedefs(episode, mission)
+    map_load_segs(episode, mission)
+    map_load_subsectors(episode, mission)
+    map_load_nodes(episode, mission)
+    map_load_things(episode, mission)
+    map_load_blockmap(episode, mission)
+    map_load_reject(episode, mission)
+    println(f"Map E{episode}M{mission}: {map_num_vertexes} verts, {map_num_linedefs} lines, {map_num_sectors} sectors, {map_num_nodes} nodes, {map_num_things} things")
+}
+
+func map_load_vertexes(ep, mi) {
+    const idx = wad_find_map_lump(ep, mi, "VERTEXES")
+    if idx < 0 { println("ERROR: VERTEXES not found"); return }
+    const data = wad_read(idx)
+    map_vertexes = []
+    map_num_vertexes = len(data) / 4
+    let i = 0
+    while i < map_num_vertexes {
+        const ofs = i * 4
+        const x = read_i16(data, ofs) << FRACBITS
+        const y = read_i16(data, ofs + 2) << FRACBITS
+        map_vertexes.push({"x": x, "y": y})
+        i = i + 1
+    }
+}
+
+func map_load_sectors(ep, mi) {
+    const idx = wad_find_map_lump(ep, mi, "SECTORS")
+    if idx < 0 { println("ERROR: SECTORS not found"); return }
+    const data = wad_read(idx)
+    map_sectors = []
+    map_num_sectors = len(data) / 26
+    let i = 0
+    while i < map_num_sectors {
+        const ofs = i * 26
+        map_sectors.push({
+            "floorheight": read_i16(data, ofs) << FRACBITS,
+            "ceilingheight": read_i16(data, ofs + 2) << FRACBITS,
+            "floorpic": read_string(data, ofs + 4, 8).upper(),
+            "ceilingpic": read_string(data, ofs + 12, 8).upper(),
+            "lightlevel": read_i16(data, ofs + 20),
+            "special": read_i16(data, ofs + 22),
+            "tag": read_i16(data, ofs + 24),
+            "soundtraversed": 0,
+            "soundtarget": null,
+            "thinglist": null,
+            "floordata": null,
+            "ceilingdata": null,
+            "validcount": 0,
+            "lines": [],
+            "index": i
+        })
+        i = i + 1
+    }
+}
+
+func map_load_sidedefs(ep, mi) {
+    const idx = wad_find_map_lump(ep, mi, "SIDEDEFS")
+    if idx < 0 { println("ERROR: SIDEDEFS not found"); return }
+    const data = wad_read(idx)
+    map_sidedefs = []
+    map_num_sides = len(data) / 30
+    let i = 0
+    while i < map_num_sides {
+        const ofs = i * 30
+        const sector_idx = read_i16(data, ofs + 28)
+        map_sidedefs.push({
+            "textureoffset": read_i16(data, ofs) << FRACBITS,
+            "rowoffset": read_i16(data, ofs + 2) << FRACBITS,
+            "toptexture": read_string(data, ofs + 4, 8).upper(),
+            "bottomtexture": read_string(data, ofs + 12, 8).upper(),
+            "midtexture": read_string(data, ofs + 20, 8).upper(),
+            "sector": if sector_idx >= 0 && sector_idx < map_num_sectors { map_sectors[sector_idx] } else { null },
+            "sector_idx": sector_idx
+        })
+        i = i + 1
+    }
+}
+
+func map_load_linedefs(ep, mi) {
+    const idx = wad_find_map_lump(ep, mi, "LINEDEFS")
+    if idx < 0 { println("ERROR: LINEDEFS not found"); return }
+    const data = wad_read(idx)
+    map_linedefs = []
+    map_num_linedefs = len(data) / 14
+    let i = 0
+    while i < map_num_linedefs {
+        const ofs = i * 14
+        const v1 = read_u16(data, ofs)
+        const v2 = read_u16(data, ofs + 2)
+        const flags = read_i16(data, ofs + 4)
+        const special = read_i16(data, ofs + 6)
+        const tag = read_i16(data, ofs + 8)
+        const s1 = read_u16(data, ofs + 10)
+        const s2 = read_u16(data, ofs + 12)
+        const vertex1 = if v1 < map_num_vertexes { map_vertexes[v1] } else { {"x": 0, "y": 0} }
+        const vertex2 = if v2 < map_num_vertexes { map_vertexes[v2] } else { {"x": 0, "y": 0} }
+        const dx = vertex2["x"] - vertex1["x"]
+        const dy = vertex2["y"] - vertex1["y"]
+        const front = if s1 < map_num_sides && s1 != 65535 { map_sidedefs[s1] } else { null }
+        const back = if s2 < map_num_sides && s2 != 65535 { map_sidedefs[s2] } else { null }
+        map_linedefs.push({
+            "v1": vertex1, "v2": vertex2,
+            "dx": dx, "dy": dy,
+            "flags": flags, "special": special, "tag": tag,
+            "sidenum": [s1, s2],
+            "frontsector": if front != null { front["sector"] } else { null },
+            "backsector": if back != null { back["sector"] } else { null },
+            "front": front, "back": back,
+            "validcount": 0,
+            "bbox": {
+                "top": if vertex1["y"] > vertex2["y"] { vertex1["y"] } else { vertex2["y"] },
+                "bottom": if vertex1["y"] < vertex2["y"] { vertex1["y"] } else { vertex2["y"] },
+                "left": if vertex1["x"] < vertex2["x"] { vertex1["x"] } else { vertex2["x"] },
+                "right": if vertex1["x"] > vertex2["x"] { vertex1["x"] } else { vertex2["x"] }
+            },
+            "slopetype": if dx == 0 { 0 } else if dy == 0 { 1 } else if (dy > 0) == (dx > 0) { 2 } else { 3 },
+            "index": i
+        })
+        i = i + 1
+    }
+}
+
+func map_load_segs(ep, mi) {
+    const idx = wad_find_map_lump(ep, mi, "SEGS")
+    if idx < 0 { println("ERROR: SEGS not found"); return }
+    const data = wad_read(idx)
+    map_segs = []
+    map_num_segs = len(data) / 12
+    let i = 0
+    while i < map_num_segs {
+        const ofs = i * 12
+        const v1 = read_u16(data, ofs)
+        const v2 = read_u16(data, ofs + 2)
+        const angle = read_i16(data, ofs + 4) << 16
+        const linedef_idx = read_u16(data, ofs + 6)
+        const side = read_i16(data, ofs + 8)
+        const offset = read_i16(data, ofs + 10) << FRACBITS
+        const ld = if linedef_idx < map_num_linedefs { map_linedefs[linedef_idx] } else { null }
+        const sidedef = if ld != null {
+            if side == 0 { ld["front"] } else { ld["back"] }
+        } else { null }
+        const frontsector = if sidedef != null { sidedef["sector"] } else { null }
+        const backsector = if ld != null {
+            if side == 0 { ld["backsector"] } else { ld["frontsector"] }
+        } else { null }
+        map_segs.push({
+            "v1": if v1 < map_num_vertexes { map_vertexes[v1] } else { {"x": 0, "y": 0} },
+            "v2": if v2 < map_num_vertexes { map_vertexes[v2] } else { {"x": 0, "y": 0} },
+            "angle": angle,
+            "linedef": ld,
+            "side": side,
+            "offset": offset,
+            "sidedef": sidedef,
+            "frontsector": frontsector,
+            "backsector": backsector
+        })
+        i = i + 1
+    }
+}
+
+func map_load_subsectors(ep, mi) {
+    const idx = wad_find_map_lump(ep, mi, "SSECTORS")
+    if idx < 0 { println("ERROR: SSECTORS not found"); return }
+    const data = wad_read(idx)
+    map_subsectors = []
+    map_num_subsectors = len(data) / 4
+    let i = 0
+    while i < map_num_subsectors {
+        const ofs = i * 4
+        map_subsectors.push({
+            "numlines": read_u16(data, ofs),
+            "firstline": read_u16(data, ofs + 2),
+            "sector": null
+        })
+        i = i + 1
+    }
+    i = 0
+    while i < map_num_subsectors {
+        const ss = map_subsectors[i]
+        if ss["firstline"] < map_num_segs {
+            const seg = map_segs[ss["firstline"]]
+            ss["sector"] = seg["frontsector"]
+        }
+        i = i + 1
+    }
+}
+
+func map_load_nodes(ep, mi) {
+    const idx = wad_find_map_lump(ep, mi, "NODES")
+    if idx < 0 { println("ERROR: NODES not found"); return }
+    const data = wad_read(idx)
+    map_nodes = []
+    map_num_nodes = len(data) / 28
+    let i = 0
+    while i < map_num_nodes {
+        const ofs = i * 28
+        map_nodes.push({
+            "x": read_i16(data, ofs) << FRACBITS,
+            "y": read_i16(data, ofs + 2) << FRACBITS,
+            "dx": read_i16(data, ofs + 4) << FRACBITS,
+            "dy": read_i16(data, ofs + 6) << FRACBITS,
+            "bbox": [
+                {
+                    "top": read_i16(data, ofs + 8) << FRACBITS,
+                    "bottom": read_i16(data, ofs + 10) << FRACBITS,
+                    "left": read_i16(data, ofs + 12) << FRACBITS,
+                    "right": read_i16(data, ofs + 14) << FRACBITS
+                },
+                {
+                    "top": read_i16(data, ofs + 16) << FRACBITS,
+                    "bottom": read_i16(data, ofs + 18) << FRACBITS,
+                    "left": read_i16(data, ofs + 20) << FRACBITS,
+                    "right": read_i16(data, ofs + 22) << FRACBITS
+                }
+            ],
+            "children": [read_u16(data, ofs + 24), read_u16(data, ofs + 26)]
+        })
+        i = i + 1
+    }
+}
+
+func map_load_things(ep, mi) {
+    const idx = wad_find_map_lump(ep, mi, "THINGS")
+    if idx < 0 { println("ERROR: THINGS not found"); return }
+    const data = wad_read(idx)
+    map_things = []
+    map_num_things = len(data) / 10
+    let i = 0
+    while i < map_num_things {
+        const ofs = i * 10
+        map_things.push({
+            "x": read_i16(data, ofs) << FRACBITS,
+            "y": read_i16(data, ofs + 2) << FRACBITS,
+            "angle": read_i16(data, ofs + 4),
+            "type": read_u16(data, ofs + 6),
+            "options": read_i16(data, ofs + 8)
+        })
+        i = i + 1
+    }
+}
+
+func map_load_blockmap(ep, mi) {
+    const idx = wad_find_map_lump(ep, mi, "BLOCKMAP")
+    if idx < 0 { map_blockmap = null; return }
+    const data = wad_read(idx)
+    if len(data) < 8 { map_blockmap = null; return }
+    map_blockmap = {
+        "originx": read_i16(data, 0) << FRACBITS,
+        "originy": read_i16(data, 2) << FRACBITS,
+        "width": read_i16(data, 4),
+        "height": read_i16(data, 6),
+        "data": data
+    }
+}
+
+func map_load_reject(ep, mi) {
+    const idx = wad_find_map_lump(ep, mi, "REJECT")
+    if idx < 0 { map_reject = []; return }
+    map_reject = wad_read(idx)
+}
+
+func map_check_reject(s1, s2) {
+    if len(map_reject) == 0 { return false }
+    const bit = s1 * map_num_sectors + s2
+    const byte_idx = bit / 8
+    const bit_idx = bit & 7
+    if byte_idx >= len(map_reject) { return false }
+    (map_reject[byte_idx] & (1 << bit_idx)) != 0
+}
+
+func map_get_subsector(x, y) {
+    let node_idx = map_num_nodes - 1
+    while node_idx < 32768 {
+        const node = map_nodes[node_idx]
+        const side = point_on_side(x, y, node["x"], node["y"], node["dx"], node["dy"])
+        node_idx = node["children"][side]
+    }
+    node_idx & 32767
+}

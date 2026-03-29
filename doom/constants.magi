@@ -1,0 +1,169 @@
+const SCREENWIDTH = 320
+const SCREENHEIGHT = 200
+const SCREENSCALE = 3
+const WINDOWWIDTH = SCREENWIDTH * SCREENSCALE
+const WINDOWHEIGHT = SCREENHEIGHT * SCREENSCALE
+const VIEWWIDTH = 320
+const VIEWHEIGHT = 168
+const ST_HEIGHT = 32
+const ST_Y = VIEWHEIGHT
+
+const TICRATE = 35
+const MAXPLAYERS = 1
+
+const MF_SPECIAL    = 1
+const MF_SOLID      = 2
+const MF_SHOOTABLE  = 4
+const MF_NOSECTOR   = 8
+const MF_NOBLOCKMAP = 16
+const MF_AMBUSH     = 32
+const MF_JUSTHIT    = 64
+const MF_JUSTATTACKED = 128
+const MF_SPAWNCEILING = 256
+const MF_NOGRAVITY  = 512
+const MF_DROPOFF    = 1024
+const MF_PICKUP     = 2048
+const MF_NOCLIP     = 4096
+const MF_SLIDE      = 8192
+const MF_FLOAT      = 16384
+const MF_TELEPORT   = 32768
+const MF_MISSILE    = 65536
+const MF_DROPPED    = 131072
+const MF_SHADOW     = 262144
+const MF_NOBLOOD    = 524288
+const MF_CORPSE     = 1048576
+const MF_INFLOAT    = 2097152
+const MF_COUNTKILL  = 4194304
+const MF_COUNTITEM  = 8388608
+const MF_SKULLFLY   = 16777216
+const MF_NOTDMATCH  = 33554432
+
+const ML_BLOCKING      = 1
+const ML_BLOCKMONSTERS = 2
+const ML_TWOSIDED      = 4
+const ML_DONTPEGTOP    = 8
+const ML_DONTPEGBOTTOM = 16
+const ML_SECRET        = 32
+const ML_SOUNDBLOCK    = 64
+const ML_DONTDRAW      = 128
+const ML_MAPPED        = 256
+
+const MTF_EASY   = 1
+const MTF_NORMAL = 2
+const MTF_HARD   = 4
+const MTF_AMBUSH = 8
+const MTF_MULTI  = 16
+
+const sk_baby = 0
+const sk_easy = 1
+const sk_medium = 2
+const sk_hard = 3
+const sk_nightmare = 4
+
+const pw_invulnerability = 0
+const pw_strength = 1
+const pw_invisibility = 2
+const pw_ironfeet = 3
+const pw_allmap = 4
+const pw_infrared = 5
+const NUMPOWERS = 6
+
+const am_clip    = 0
+const am_shell   = 1
+const am_cell    = 2
+const am_misl    = 3
+const NUMAMMO    = 4
+const am_noammo  = 4
+
+const wp_fist      = 0
+const wp_pistol    = 1
+const wp_shotgun   = 2
+const wp_chaingun  = 3
+const wp_missile   = 4
+const wp_plasma    = 5
+const wp_bfg       = 6
+const wp_chainsaw  = 7
+const wp_supershotgun = 8
+const NUMWEAPONS   = 9
+
+const it_bluecard    = 0
+const it_yellowcard  = 1
+const it_redcard     = 2
+const it_blueskull   = 3
+const it_yellowskull = 4
+const it_redskull    = 5
+const NUMCARDS       = 6
+
+const MAXHEALTH   = 200
+const MAXARMOR    = 200
+const MAXAMMO_CLIP   = 200
+const MAXAMMO_SHELL  = 50
+const MAXAMMO_CELL   = 300
+const MAXAMMO_MISL   = 50
+
+const MELEERANGE  = 64 * (1 << 16)
+const MISSILERANGE = 32 * 64 * (1 << 16)
+const USERANGE    = 64 * (1 << 16)
+
+const MAXRADIUS = 32 * (1 << 16)
+const GRAVITY   = 1 * (1 << 16)
+const MAXMOVE   = 30 * (1 << 16)
+const STOPSPEED = 4096
+const FRICTION  = 59392
+
+const VIEWHEIGHT_FRAC = 41 * (1 << 16)
+const MAXSTEP   = 24 * (1 << 16)
+
+const FLOATSPEED = 4 * (1 << 16)
+const MAPBLOCKSHIFT = 7 + 16
+const MAPBLOCKSIZE = 128 * (1 << 16)
+const MAPBTOFRAC = MAPBLOCKSHIFT - FRACBITS
+
+const GS_LEVEL       = 0
+const GS_INTERMISSION = 1
+const GS_FINALE      = 2
+const GS_DEMOSCREEN  = 3
+
+const EVT_QUIT    = 256
+const EVT_KEYDOWN = 768
+const EVT_KEYUP   = 769
+
+const SC_ESCAPE = 41
+const SC_RETURN = 40
+const SC_SPACE  = 44
+const SC_TAB    = 43
+const SC_UP     = 82
+const SC_DOWN   = 81
+const SC_LEFT   = 80
+const SC_RIGHT  = 79
+const SC_W      = 26
+const SC_A      = 4
+const SC_S      = 22
+const SC_D      = 7
+const SC_E      = 8
+const SC_LSHIFT = 225
+const SC_LCTRL  = 224
+const SC_1 = 30
+const SC_2 = 31
+const SC_3 = 32
+const SC_4 = 33
+const SC_5 = 34
+const SC_6 = 35
+const SC_7 = 36
+const SC_MINUS = 45
+const SC_EQUALS = 46
+const SC_F1 = 58
+const SC_F2 = 59
+const SC_F3 = 60
+const SC_F4 = 61
+const SC_F5 = 62
+const SC_F6 = 63
+
+const NUMLIGHTS = 32
+const LIGHTLEVELS = 16
+const MAXLIGHTSCALE = 48
+const LIGHTSEGSHIFT = 4
+const MAXLIGHTZ = 128
+const LIGHTZSHIFT = 20
+const LIGHTBRIGHT = 2
+const NUMCOLORMAPS = 32

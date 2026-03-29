@@ -1,0 +1,355 @@
+let door_thinkers = []
+
+const VDOORSPEED = 2 * FRACUNIT
+const VDOORWAIT = 150
+
+func doors_init() {
+    door_thinkers = []
+}
+
+func doors_use_line(line, side) {
+    const special = line["special"]
+    if special == 0 { return }
+    match special {
+        1 => door_open_standard(line),
+        26 => door_open_keyed(line, it_bluecard, it_blueskull),
+        27 => door_open_keyed(line, it_yellowcard, it_yellowskull),
+        28 => door_open_keyed(line, it_redcard, it_redskull),
+        31 => door_open_stay(line),
+        32 => door_open_keyed_stay(line, it_bluecard, it_blueskull),
+        33 => door_open_keyed_stay(line, it_redcard, it_redskull),
+        34 => door_open_keyed_stay(line, it_yellowcard, it_yellowskull),
+        46 => door_open_stay(line),
+        62 => plat_down_wait_up(line),
+        63 => door_open_standard(line),
+        103 => door_open_standard(line),
+        29 => door_open_standard(line),
+        111 => door_open_blazing(line),
+        117 => door_open_blazing_stay(line),
+        _ => door_generic_special(line, special)
+    }
+}
+
+func doors_walk_line(line) {
+    const special = line["special"]
+    if special == 0 { return }
+    match special {
+        2 => door_open_stay(line),
+        3 => door_close(line),
+        4 => door_open_standard(line),
+        16 => door_close_wait_open(line),
+        10 => plat_down_wait_up(line),
+        22 => plat_down_wait_up(line),
+        36 => floor_lower_to_highest(line),
+        38 => floor_lower_to_lowest(line),
+        52 => { line["special"] = 0 },
+        88 => plat_down_wait_up(line),
+        90 => door_open_standard(line),
+        97 => teleport_thing(line),
+        39 => teleport_thing(line),
+        _ => {}
+    }
+}
+
+func door_open_standard(line) {
+    const sector = find_tagged_sector(line["tag"])
+    if sector == null && line["backsector"] != null {
+        door_open_sector(line["backsector"], VDOORSPEED, VDOORWAIT)
+        return
+    }
+    if sector != null {
+        door_open_sector(sector, VDOORSPEED, VDOORWAIT)
+    }
+}
+
+func door_open_stay(line) {
+    const sector = find_tagged_sector(line["tag"])
+    if sector == null && line["backsector"] != null {
+        door_open_sector(line["backsector"], VDOORSPEED, -1)
+        return
+    }
+    if sector != null {
+        door_open_sector(sector, VDOORSPEED, -1)
+    }
+}
+
+func door_open_blazing(line) {
+    const sector = find_tagged_sector(line["tag"])
+    if sector == null && line["backsector"] != null {
+        door_open_sector(line["backsector"], VDOORSPEED * 4, VDOORWAIT)
+        return
+    }
+    if sector != null {
+        door_open_sector(sector, VDOORSPEED * 4, VDOORWAIT)
+    }
+}
+
+func door_open_blazing_stay(line) {
+    const sector = find_tagged_sector(line["tag"])
+    if sector == null && line["backsector"] != null {
+        door_open_sector(line["backsector"], VDOORSPEED * 4, -1)
+        return
+    }
+    if sector != null {
+        door_open_sector(sector, VDOORSPEED * 4, -1)
+    }
+}
+
+func door_open_keyed(line, card1, card2) {
+    if !player_keys[card1] && !player_keys[card2] {
+        println("You need a key to open this door.")
+        return
+    }
+    door_open_standard(line)
+}
+
+func door_open_keyed_stay(line, card1, card2) {
+    if !player_keys[card1] && !player_keys[card2] {
+        println("You need a key to open this door.")
+        return
+    }
+    door_open_stay(line)
+}
+
+func door_close(line) {
+    const sector = find_tagged_sector(line["tag"])
+    if sector != null {
+        door_close_sector(sector, VDOORSPEED)
+    }
+}
+
+func door_close_wait_open(line) {
+    const sector = find_tagged_sector(line["tag"])
+    if sector != null {
+        door_thinkers.push({
+            "type": "door",
+            "sector": sector,
+            "direction": -1,
+            "speed": VDOORSPEED,
+            "topheight": sector["ceilingheight"],
+            "topcountdown": VDOORWAIT,
+            "phase": "closing"
+        })
+    }
+}
+
+func door_open_sector(sector, speed, wait_tics) {
+    let existing = null
+    for t in door_thinkers {
+        if t["sector"] == sector && t["type"] == "door" { existing = t }
+    }
+    if existing != null {
+        if existing["direction"] == -1 { existing["direction"] = 1; existing["phase"] = "opening" }
+        return
+    }
+    const top = find_lowest_ceiling_around(sector) - 4 * FRACUNIT
+    door_thinkers.push({
+        "type": "door",
+        "sector": sector,
+        "direction": 1,
+        "speed": speed,
+        "topheight": top,
+        "topcountdown": wait_tics,
+        "phase": "opening"
+    })
+}
+
+func door_close_sector(sector, speed) {
+    const floor = sector["floorheight"]
+    door_thinkers.push({
+        "type": "door",
+        "sector": sector,
+        "direction": -1,
+        "speed": speed,
+        "topheight": sector["ceilingheight"],
+        "topcountdown": 0,
+        "phase": "closing",
+        "bottomheight": floor
+    })
+}
+
+func plat_down_wait_up(line) {
+    const sector = find_tagged_sector(line["tag"])
+    if sector == null { return }
+    const low = find_lowest_floor_around(sector)
+    door_thinkers.push({
+        "type": "plat",
+        "sector": sector,
+        "speed": VDOORSPEED * 2,
+        "low": low,
+        "high": sector["floorheight"],
+        "wait": 105,
+        "count": 0,
+        "phase": "down"
+    })
+}
+
+func floor_lower_to_highest(line) {
+    const sector = find_tagged_sector(line["tag"])
+    if sector == null { return }
+    const target = find_highest_floor_around(sector)
+    door_thinkers.push({
+        "type": "floor",
+        "sector": sector,
+        "speed": FRACUNIT,
+        "target": target,
+        "direction": if target > sector["floorheight"] { 1 } else { -1 }
+    })
+}
+
+func floor_lower_to_lowest(line) {
+    const sector = find_tagged_sector(line["tag"])
+    if sector == null { return }
+    const target = find_lowest_floor_around(sector)
+    door_thinkers.push({
+        "type": "floor",
+        "sector": sector,
+        "speed": FRACUNIT,
+        "target": target,
+        "direction": -1
+    })
+}
+
+func teleport_thing(line) {
+    for thing in map_things {
+        if thing["type"] == 14 {
+            const dest_sector = find_tagged_sector(line["tag"])
+            if dest_sector != null {
+                player_x = thing["x"]
+                player_y = thing["y"]
+                player_z = player_floorz
+                player_momx = 0
+                player_momy = 0
+                player_angle = thing["angle"] * ANG45 / 45
+            }
+            return
+        }
+    }
+}
+
+func door_generic_special(line, special) {
+    // placeholder for remaining ~100 line specials
+}
+
+func doors_run_thinkers() {
+    let i = 0
+    while i < len(door_thinkers) {
+        const t = door_thinkers[i]
+        match t["type"] {
+            "door" => door_think(t, i),
+            "plat" => plat_think(t, i),
+            "floor" => floor_think(t, i),
+            _ => {}
+        }
+        i = i + 1
+    }
+}
+
+func door_think(t, idx) {
+    const sector = t["sector"]
+    if t["phase"] == "opening" {
+        sector["ceilingheight"] = sector["ceilingheight"] + t["speed"]
+        if sector["ceilingheight"] >= t["topheight"] {
+            sector["ceilingheight"] = t["topheight"]
+            if t["topcountdown"] > 0 {
+                t["phase"] = "waiting"
+                t["topcountdown"] = t["topcountdown"]
+            } else if t["topcountdown"] == -1 {
+                door_thinkers.splice(idx, 1)
+            }
+        }
+    } else if t["phase"] == "waiting" {
+        t["topcountdown"] = t["topcountdown"] - 1
+        if t["topcountdown"] <= 0 {
+            t["phase"] = "closing"
+        }
+    } else if t["phase"] == "closing" {
+        sector["ceilingheight"] = sector["ceilingheight"] - t["speed"]
+        if sector["ceilingheight"] <= sector["floorheight"] {
+            sector["ceilingheight"] = sector["floorheight"]
+            door_thinkers.splice(idx, 1)
+        }
+    }
+}
+
+func plat_think(t, idx) {
+    const sector = t["sector"]
+    if t["phase"] == "down" {
+        sector["floorheight"] = sector["floorheight"] - t["speed"]
+        if sector["floorheight"] <= t["low"] {
+            sector["floorheight"] = t["low"]
+            t["phase"] = "wait"
+            t["count"] = t["wait"]
+        }
+    } else if t["phase"] == "wait" {
+        t["count"] = t["count"] - 1
+        if t["count"] <= 0 { t["phase"] = "up" }
+    } else if t["phase"] == "up" {
+        sector["floorheight"] = sector["floorheight"] + t["speed"]
+        if sector["floorheight"] >= t["high"] {
+            sector["floorheight"] = t["high"]
+            door_thinkers.splice(idx, 1)
+        }
+    }
+}
+
+func floor_think(t, idx) {
+    const sector = t["sector"]
+    sector["floorheight"] = sector["floorheight"] + t["speed"] * t["direction"]
+    if (t["direction"] > 0 && sector["floorheight"] >= t["target"]) ||
+       (t["direction"] < 0 && sector["floorheight"] <= t["target"]) {
+        sector["floorheight"] = t["target"]
+        door_thinkers.splice(idx, 1)
+    }
+}
+
+func find_tagged_sector(tag) {
+    if tag == 0 { return null }
+    for sector in map_sectors {
+        if sector["tag"] == tag { return sector }
+    }
+    null
+}
+
+func find_lowest_ceiling_around(sector) {
+    let lowest = 32767 << FRACBITS
+    for line in map_linedefs {
+        if line["frontsector"] == sector && line["backsector"] != null {
+            if line["backsector"]["ceilingheight"] < lowest {
+                lowest = line["backsector"]["ceilingheight"]
+            }
+        }
+        if line["backsector"] == sector && line["frontsector"] != null {
+            if line["frontsector"]["ceilingheight"] < lowest {
+                lowest = line["frontsector"]["ceilingheight"]
+            }
+        }
+    }
+    lowest
+}
+
+func find_lowest_floor_around(sector) {
+    let lowest = sector["floorheight"]
+    for line in map_linedefs {
+        if line["frontsector"] == sector && line["backsector"] != null {
+            if line["backsector"]["floorheight"] < lowest { lowest = line["backsector"]["floorheight"] }
+        }
+        if line["backsector"] == sector && line["frontsector"] != null {
+            if line["frontsector"]["floorheight"] < lowest { lowest = line["frontsector"]["floorheight"] }
+        }
+    }
+    lowest
+}
+
+func find_highest_floor_around(sector) {
+    let highest = -32767 << FRACBITS
+    for line in map_linedefs {
+        if line["frontsector"] == sector && line["backsector"] != null {
+            if line["backsector"]["floorheight"] > highest { highest = line["backsector"]["floorheight"] }
+        }
+        if line["backsector"] == sector && line["frontsector"] != null {
+            if line["frontsector"]["floorheight"] > highest { highest = line["frontsector"]["floorheight"] }
+        }
+    }
+    highest
+}

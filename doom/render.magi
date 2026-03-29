@@ -1,0 +1,409 @@
+let r_framebuffer = []
+let r_occlusion = []
+let r_floorclip = []
+let r_ceilingclip = []
+let r_viewangle = 0
+let r_viewx = 0
+let r_viewy = 0
+let r_viewz = 0
+let r_viewsin = 0
+let r_viewcos = 0
+let r_centerx = 0
+let r_centery = 0
+let r_projection = 0
+let r_vissprites = []
+let r_visplanes = []
+let r_screenheightarray = []
+let r_xtoviewangle = []
+
+func render_init() {
+    r_framebuffer = []
+    let i = 0
+    while i < SCREENWIDTH * SCREENHEIGHT {
+        r_framebuffer.push(0)
+        i = i + 1
+    }
+    r_occlusion = []
+    r_floorclip = []
+    r_ceilingclip = []
+    r_screenheightarray = []
+    i = 0
+    while i < SCREENWIDTH {
+        r_occlusion.push(0)
+        r_floorclip.push(VIEWHEIGHT)
+        r_ceilingclip.push(-1)
+        r_screenheightarray.push(0)
+        i = i + 1
+    }
+    r_centerx = VIEWWIDTH / 2
+    r_centery = VIEWHEIGHT / 2
+    r_projection = r_centerx << FRACBITS
+    r_xtoviewangle = []
+    i = 0
+    while i < VIEWWIDTH + 1 {
+        const f = atan((i - r_centerx + 0.5) / (r_centerx * 1.0))
+        const pi = 3.14159265358979323846
+        const a = floor(-f * (ANG180 * 1.0) / pi + 0.5)
+        r_xtoviewangle.push(a)
+        i = i + 1
+    }
+    bsp_init()
+}
+
+func render_player_view() {
+    r_viewx = player_x
+    r_viewy = player_y
+    r_viewz = player_viewz
+    r_viewangle = player_angle
+    r_viewsin = fine_sine(r_viewangle)
+    r_viewcos = fine_cosine(r_viewangle)
+    r_vissprites = []
+    r_visplanes = []
+    let i = 0
+    while i < SCREENWIDTH {
+        r_occlusion[i] = 0
+        r_floorclip[i] = VIEWHEIGHT
+        r_ceilingclip[i] = -1
+        i = i + 1
+    }
+    render_clear_fb()
+    bsp_new_validcount()
+    r_render_bsp_node(map_num_nodes - 1, r_render_subsector)
+    r_draw_vissprites()
+}
+
+func render_clear_fb() {
+    let i = 0
+    while i < SCREENWIDTH * SCREENHEIGHT {
+        r_framebuffer[i] = 0
+        i = i + 1
+    }
+}
+
+func r_render_subsector(ssnum) {
+    if ssnum < 0 || ssnum >= map_num_subsectors { return }
+    const ss = map_subsectors[ssnum]
+    const sector = ss["sector"]
+    if sector == null { return }
+    let i = 0
+    while i < ss["numlines"] {
+        const seg_idx = ss["firstline"] + i
+        if seg_idx < map_num_segs {
+            r_add_line(map_segs[seg_idx])
+        }
+        i = i + 1
+    }
+}
+
+func r_add_line(seg) {
+    const v1 = seg["v1"]
+    const v2 = seg["v2"]
+    const angle1 = r_point_to_angle(r_viewx, r_viewy, v1["x"], v1["y"]) - r_viewangle
+    const angle2 = r_point_to_angle(r_viewx, r_viewy, v2["x"], v2["y"]) - r_viewangle
+    const span = angle1 - angle2
+    if span <= 0 { return }
+    if span >= ANG180 { return }
+    let rw_angle1 = angle1
+    let tspan = angle1 + clipangle
+    if tspan > 2 * clipangle {
+        tspan = tspan - 2 * clipangle
+        if tspan >= span { return }
+        rw_angle1 = clipangle
+    }
+    tspan = clipangle - angle2
+    if tspan > 2 * clipangle {
+        tspan = tspan - 2 * clipangle
+        if tspan >= span { return }
+    }
+    const x1 = r_angle_to_x(rw_angle1 + r_viewangle)
+    let x2 = r_angle_to_x(angle2 + r_viewangle)
+    if x1 == x2 { return }
+    x2 = x2 - 1
+    if x1 >= VIEWWIDTH || x2 < 0 { return }
+    const clipped_x1 = if x1 < 0 { 0 } else { x1 }
+    const clipped_x2 = if x2 >= VIEWWIDTH { VIEWWIDTH - 1 } else { x2 }
+    let all_occluded = true
+    let chk = clipped_x1
+    while chk <= clipped_x2 {
+        if r_occlusion[chk] == 0 { all_occluded = false; chk = clipped_x2 + 1 }
+        chk = chk + 1
+    }
+    if all_occluded { return }
+    r_draw_seg(seg, clipped_x1, clipped_x2, rw_angle1)
+}
+
+func r_angle_to_x(angle) {
+    let a = angle - r_viewangle
+    while a > ANG180 { a = a - ANG360 }
+    while a < -ANG180 { a = a + ANG360 }
+    if a > ANG90 { return 0 }
+    if a < -ANG90 { return VIEWWIDTH }
+    const t = fine_tangent((ANG90 - a) >> ANGLETOFINESHIFT << ANGLETOFINESHIFT)
+    const x = r_centerx - fixed_mul(t, r_projection >> FRACBITS)
+    if x < 0 { 0 } else if x > VIEWWIDTH { VIEWWIDTH } else { x }
+}
+
+func r_draw_seg(seg, x1, x2, rw_angle1) {
+    const line = seg["linedef"]
+    if line == null { return }
+    const frontsector = seg["frontsector"]
+    const backsector = seg["backsector"]
+    if frontsector == null { return }
+    const v1 = seg["v1"]
+    const dx = v1["x"] - r_viewx
+    const dy = v1["y"] - r_viewy
+    const rw_dist = abs(fixed_mul(dx, r_viewsin) - fixed_mul(dy, r_viewcos))
+    if rw_dist <= 0 { return }
+    const worldfront_floor = frontsector["floorheight"] - r_viewz
+    const worldfront_ceiling = frontsector["ceilingheight"] - r_viewz
+    const light = frontsector["lightlevel"]
+    const cmap_idx = colormap_index(light, rw_dist)
+    const cmap = get_colormap(cmap_idx)
+    const toptex = if seg["sidedef"] != null { texture_find_index(seg["sidedef"]["toptexture"]) } else { -1 }
+    const midtex = if seg["sidedef"] != null { texture_find_index(seg["sidedef"]["midtexture"]) } else { -1 }
+    const bottex = if seg["sidedef"] != null { texture_find_index(seg["sidedef"]["bottomtexture"]) } else { -1 }
+    let has_back = backsector != null
+    let worldback_floor = 0
+    let worldback_ceiling = 0
+    if has_back {
+        worldback_floor = backsector["floorheight"] - r_viewz
+        worldback_ceiling = backsector["ceilingheight"] - r_viewz
+    }
+    let x = x1
+    while x <= x2 {
+        if r_occlusion[x] != 0 { x = x + 1; continue }
+        const angle = r_xtoviewangle[x]
+        const rw_angle = r_viewangle + angle
+        const dist = fixed_div(r_projection, fine_cosine((rw_angle - r_viewangle) & (ANG360 - 1)))
+        if dist <= 0 { x = x + 1; continue }
+        const scale = fixed_div(r_projection, dist >> 8)
+        const top_y = r_centery - fixed_to_int(fixed_mul(worldfront_ceiling, scale))
+        const bot_y = r_centery - fixed_to_int(fixed_mul(worldfront_floor, scale))
+        const ceil_clip = r_ceilingclip[x] + 1
+        const floor_clip = r_floorclip[x] - 1
+        if !has_back {
+            const wall_top = if top_y < ceil_clip { ceil_clip } else { top_y }
+            const wall_bot = if bot_y > floor_clip { floor_clip } else { bot_y }
+            if midtex >= 0 {
+                const tex = tex_textures[midtex]
+                const tex_col = r_calc_texcol(seg, rw_angle, dist)
+                r_draw_wall_column(x, wall_top, wall_bot, midtex, tex_col, scale, worldfront_ceiling, cmap, line["flags"])
+            } else {
+                r_draw_color_column(x, wall_top, wall_bot, 96, cmap)
+            }
+            r_draw_floor_ceiling(x, top_y, bot_y, ceil_clip, floor_clip, frontsector, dist, cmap_idx)
+            r_occlusion[x] = 1
+            r_ceilingclip[x] = VIEWHEIGHT
+            r_floorclip[x] = -1
+        } else {
+            const back_top_y = r_centery - fixed_to_int(fixed_mul(worldback_ceiling, scale))
+            const back_bot_y = r_centery - fixed_to_int(fixed_mul(worldback_floor, scale))
+            if worldback_ceiling < worldfront_ceiling && toptex >= 0 {
+                const wall_top = if top_y < ceil_clip { ceil_clip } else { top_y }
+                const wall_bot = if back_top_y > floor_clip { floor_clip } else { back_top_y }
+                if wall_top <= wall_bot {
+                    const tex_col = r_calc_texcol(seg, rw_angle, dist)
+                    r_draw_wall_column(x, wall_top, wall_bot, toptex, tex_col, scale, worldfront_ceiling, cmap, line["flags"])
+                }
+                if back_top_y > r_ceilingclip[x] { r_ceilingclip[x] = back_top_y }
+            }
+            if worldback_floor > worldfront_floor && bottex >= 0 {
+                const wall_top = if back_bot_y < ceil_clip { ceil_clip } else { back_bot_y }
+                const wall_bot = if bot_y > floor_clip { floor_clip } else { bot_y }
+                if wall_top <= wall_bot {
+                    const tex_col = r_calc_texcol(seg, rw_angle, dist)
+                    r_draw_wall_column(x, wall_top, wall_bot, bottex, tex_col, scale, worldback_floor, cmap, line["flags"])
+                }
+                if back_bot_y < r_floorclip[x] { r_floorclip[x] = back_bot_y }
+            }
+            r_draw_floor_ceiling(x, top_y, bot_y, ceil_clip, floor_clip, frontsector, dist, cmap_idx)
+            if worldback_ceiling == worldfront_ceiling && worldback_floor == worldfront_floor {
+                r_occlusion[x] = 0
+            }
+        }
+        x = x + 1
+    }
+}
+
+func r_calc_texcol(seg, rw_angle, dist) {
+    const offset = seg["offset"]
+    const sidedef = seg["sidedef"]
+    const texoffset = if sidedef != null { sidedef["textureoffset"] } else { 0 }
+    const angle = rw_angle - seg["angle"]
+    const hyp = fixed_div(dist, fine_cosine(angle >> ANGLETOFINESHIFT << ANGLETOFINESHIFT))
+    const sinv = fine_sine(rw_angle >> ANGLETOFINESHIFT << ANGLETOFINESHIFT)
+    const rw_offset = fixed_mul(hyp, sinv)
+    fixed_to_int(offset + texoffset + rw_offset)
+}
+
+func r_draw_wall_column(x, y1, y2, texnum, texcol, scale, world_top, cmap, flags) {
+    if y1 > y2 || x < 0 || x >= VIEWWIDTH { return }
+    const column = texture_get_column(texnum, texcol)
+    if column == null { return }
+    const tex_h = len(column)
+    if tex_h == 0 { return }
+    let y = y1
+    while y <= y2 {
+        if y >= 0 && y < VIEWHEIGHT {
+            const frac_y = ((y - (r_centery - fixed_to_int(fixed_mul(world_top, scale)))) * tex_h) / (y2 - y1 + 1)
+            const ty = ((frac_y % tex_h) + tex_h) % tex_h
+            let px = column[ty]
+            if cmap != null { px = cmap[px] }
+            r_framebuffer[y * SCREENWIDTH + x] = px
+        }
+        y = y + 1
+    }
+}
+
+func r_draw_color_column(x, y1, y2, color, cmap) {
+    if y1 > y2 { return }
+    let px = color
+    if cmap != null { px = cmap[px] }
+    let y = y1
+    while y <= y2 {
+        if y >= 0 && y < VIEWHEIGHT && x >= 0 && x < SCREENWIDTH {
+            r_framebuffer[y * SCREENWIDTH + x] = px
+        }
+        y = y + 1
+    }
+}
+
+func r_draw_floor_ceiling(x, top_y, bot_y, ceil_clip, floor_clip, sector, dist, cmap_idx) {
+    const ceil_y1 = ceil_clip
+    const ceil_y2 = if top_y - 1 < floor_clip { top_y - 1 } else { floor_clip }
+    if sector["ceilingpic"] == "F_SKY1" {
+        r_draw_sky_column(x, ceil_y1, ceil_y2)
+    } else {
+        const cflat = texture_get_flat(sector["ceilingpic"])
+        if cflat != null && ceil_y1 <= ceil_y2 {
+            r_draw_flat_column(x, ceil_y1, ceil_y2, cflat, sector["ceilingheight"], cmap_idx)
+        }
+    }
+    const floor_y1 = if bot_y + 1 > ceil_clip { bot_y + 1 } else { ceil_clip }
+    const floor_y2 = floor_clip
+    const fflat = texture_get_flat(sector["floorpic"])
+    if fflat != null && floor_y1 <= floor_y2 {
+        r_draw_flat_column(x, floor_y1, floor_y2, fflat, sector["floorheight"], cmap_idx)
+    }
+}
+
+func r_draw_flat_column(x, y1, y2, flat, height, cmap_idx) {
+    const cmap = get_colormap(cmap_idx)
+    let y = y1
+    while y <= y2 {
+        if y >= 0 && y < VIEWHEIGHT && y != r_centery {
+            const dy = abs(y - r_centery)
+            const z = abs(height - r_viewz)
+            const dist = fixed_div(z, dy << FRACBITS >> 6)
+            const s = r_viewsin >> 10
+            const c = r_viewcos >> 10
+            const mapx = (r_viewx + fixed_mul(dist, c)) >> FRACBITS
+            const mapy = (r_viewy - fixed_mul(dist, s)) >> FRACBITS
+            const tx = ((mapx & 63) + 64) % 64
+            const ty = ((mapy & 63) + 64) % 64
+            let px = flat[ty * 64 + tx]
+            if cmap != null { px = cmap[px] }
+            r_framebuffer[y * SCREENWIDTH + x] = px
+        }
+        y = y + 1
+    }
+}
+
+let sky_texture = -1
+func r_draw_sky_column(x, y1, y2) {
+    if sky_texture < 0 { sky_texture = texture_find_index("SKY1") }
+    if sky_texture < 0 { return }
+    const tex = tex_textures[sky_texture]
+    const angle = r_viewangle + r_xtoviewangle[x]
+    const col = fixed_to_int(angle >> ANGLETOFINESHIFT) & (tex["width"] - 1)
+    const column = texture_get_column(sky_texture, col)
+    if column == null { return }
+    let y = y1
+    while y <= y2 {
+        if y >= 0 && y < VIEWHEIGHT {
+            const ty = (y * len(column)) / VIEWHEIGHT
+            r_framebuffer[y * SCREENWIDTH + x] = column[((ty % len(column)) + len(column)) % len(column)]
+        }
+        y = y + 1
+    }
+}
+
+func r_draw_vissprites() {
+    for vs in r_vissprites {
+        r_draw_sprite(vs)
+    }
+}
+
+func r_add_vissprite(thing, tx, tz) {
+    if tz <= 4 * FRACUNIT { return }
+    const scale = fixed_div(r_projection, tz)
+    const x_screen = r_centerx + fixed_to_int(fixed_mul(tx, scale))
+    r_vissprites.push({
+        "thing": thing,
+        "x": x_screen,
+        "scale": scale,
+        "dist": tz
+    })
+}
+
+func r_draw_sprite(vs) {
+    const thing = vs["thing"]
+    if thing == null { return }
+    const sprite_name = thing_get_sprite_name(thing)
+    if sprite_name == null { return }
+    const lump_idx = if tex_sprite_lumps.has(sprite_name) { tex_sprite_lumps[sprite_name] } else { -1 }
+    if lump_idx < 0 { return }
+    const patch = texture_get_patch(lump_idx)
+    if patch == null { return }
+    const scale = vs["scale"]
+    const x = vs["x"] - fixed_to_int(fixed_mul(patch["leftoffset"] << FRACBITS, scale))
+    const dist = vs["dist"]
+    const cmap_idx = colormap_index(thing["sector_light"], dist)
+    const cmap = get_colormap(cmap_idx)
+    let col = 0
+    while col < patch["width"] {
+        const sx = x + fixed_to_int(col * scale)
+        if sx >= 0 && sx < VIEWWIDTH && r_occlusion[sx] == 0 {
+            const top = r_centery - fixed_to_int(fixed_mul((patch["topoffset"] << FRACBITS), scale))
+            let dest_col = []
+            let j = 0
+            while j < VIEWHEIGHT { dest_col.push(-1); j = j + 1 }
+            texture_draw_patch_column(patch, col, dest_col, 0, VIEWHEIGHT, cmap)
+            j = 0
+            while j < VIEWHEIGHT {
+                const sy = top + fixed_to_int(j * scale)
+                if sy >= r_ceilingclip[sx] + 1 && sy <= r_floorclip[sx] - 1 && dest_col[j] >= 0 {
+                    if sy >= 0 && sy < VIEWHEIGHT {
+                        r_framebuffer[sy * SCREENWIDTH + sx] = dest_col[j]
+                    }
+                }
+                j = j + 1
+            }
+        }
+        col = col + 1
+    }
+}
+
+func render_blit(window) {
+    let y = 0
+    while y < SCREENHEIGHT {
+        let x = 0
+        while x < SCREENWIDTH {
+            const px = r_framebuffer[y * SCREENWIDTH + x]
+            const rgb = palette_rgb(px)
+            sdl_set_color(window, rgb["r"], rgb["g"], rgb["b"])
+            sdl_fill_rect(window, x * SCREENSCALE, y * SCREENSCALE, SCREENSCALE, SCREENSCALE)
+            x = x + 1
+        }
+        y = y + 1
+    }
+}
+
+func thing_get_sprite_name(thing) {
+    if thing == null || thing["state"] == null { return null }
+    const state = thing["state"]
+    if state["sprite"] == null { return null }
+    const frame = state["frame"] & 31
+    const frame_char = char_at("ABCDEFGHIJKLMNOPQRSTUVWXYZ", frame)
+    state["sprite"] + frame_char + "0"
+}
