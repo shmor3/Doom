@@ -9,12 +9,15 @@ let game_level_time = 0
 
 let key_states = {}
 
-func main() {
+func doom_main() {
     println("DOOM - MAGI Engine")
     println("Loading...")
     math_init()
     tables_init()
-    const wad_path = if len(process_args()) > 0 { process_args()[0] } else { "DOOM1.WAD" }
+    const args = process_args()
+    println(f"Args: {len(args)}")
+    const wad_path = if len(args) > 0 { args[0] } else { "DOOM1.WAD" }
+    println(f"WAD path: {wad_path}")
     if !wad_open(wad_path) {
         println("Failed to load WAD file. Usage: magi run doom/main.magi <path/to/DOOM1.WAD>")
         return
@@ -205,4 +208,4 @@ func game_level_complete() {
     game_state = GS_INTERMISSION
 }
 
-main()
+doom_main()

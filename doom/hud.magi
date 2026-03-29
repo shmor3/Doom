@@ -1,47 +1,66 @@
-let hud_stbar_patch = null
-let hud_face_patches = {}
-let hud_num_patches = []
-let hud_arms_patches = []
-let hud_key_patches = []
+let hud_stbar = null
 let hud_automap = false
 let hud_message = ""
 let hud_message_tics = 0
+let hud_face_tic = 0
+let hud_face_index = 0
+let hud_oldhealth = 0
+
+let menu_active = false
+let menu_current = "main"
+let menu_item = 0
+let menu_items = {}
+let menu_skull_tic = 0
+let menu_skull_frame = 0
 
 func hud_init() {
-    hud_load_stbar()
-    hud_load_numbers()
-}
-
-func hud_load_stbar() {
     const idx = wad_find("STBAR")
-    if idx >= 0 { hud_stbar_patch = texture_get_patch(idx) }
-}
-
-func hud_load_numbers() {
-    hud_num_patches = []
-    let i = 0
-    while i < 10 {
-        const name = f"STTNUM{i}"
-        const idx = wad_find(name)
-        if idx >= 0 { hud_num_patches.push(texture_get_patch(idx)) }
-        else { hud_num_patches.push(null) }
-        i = i + 1
+    if idx >= 0 { hud_stbar = texture_get_patch(idx) }
+    menu_items = {
+        "main": ["New Game", "Options", "Load Game", "Save Game", "Quit"],
+        "episode": ["Knee-Deep in the Dead", "The Shores of Hell", "Inferno"],
+        "skill": ["I'm too young to die.", "Hey, not too rough.", "Hurt me plenty.", "Ultra-Violence.", "Nightmare!"],
+        "options": ["End Game", "Messages: ON", "Mouse Sensitivity", "Sound Volume", "Screen Size"]
     }
-    const minus_idx = wad_find("STTMINUS")
-    if minus_idx >= 0 { hud_num_patches.push(texture_get_patch(minus_idx)) }
 }
 
 func hud_draw() {
-    hud_draw_stbar()
+    if menu_active {
+        menu_draw()
+        return
+    }
+    if hud_automap {
+        automap_draw()
+    }
+    hud_draw_statusbar()
     if hud_message_tics > 0 {
-        hud_draw_message()
+        hud_draw_hud_message()
         hud_message_tics = hud_message_tics - 1
     }
 }
 
-func hud_draw_stbar() {
-    if hud_stbar_patch != null {
-        hud_draw_patch_to_fb(0, ST_Y, hud_stbar_patch)
+func hud_tick() {
+    hud_face_tic = hud_face_tic + 1
+    if hud_face_tic >= TICRATE / 2 {
+        hud_face_tic = 0
+        hud_face_index = random_int(3)
+        if player_damagecount > 0 { hud_face_index = 5 }
+        if player_health != hud_oldhealth && player_health < hud_oldhealth {
+            hud_face_index = 4
+        }
+        hud_oldhealth = player_health
+    }
+    if player_dead { hud_face_index = 6 }
+    menu_skull_tic = menu_skull_tic + 1
+    if menu_skull_tic >= 8 {
+        menu_skull_tic = 0
+        menu_skull_frame = 1 - menu_skull_frame
+    }
+}
+
+func hud_draw_statusbar() {
+    if hud_stbar != null {
+        hud_blit_patch(0, ST_Y, hud_stbar)
     } else {
         let x = 0
         while x < SCREENWIDTH {
@@ -53,49 +72,68 @@ func hud_draw_stbar() {
             x = x + 1
         }
     }
-    hud_draw_number(44, ST_Y + 3, player_ammo[weapon_info[player_readyweapon]["ammo"]], 3)
-    hud_draw_number(90, ST_Y + 3, player_health, 3)
-    hud_draw_percent(90 + 14 * 3, ST_Y + 3)
-    hud_draw_number(221, ST_Y + 3, player_armor, 3)
-    hud_draw_percent(221 + 14 * 3, ST_Y + 3)
-    hud_draw_keys()
+    const wp = player_readyweapon
+    const ammo_type = weapon_info[wp]["ammo"]
+    const ammo_val = if ammo_type < NUMAMMO { player_ammo[ammo_type] } else { 0 }
+    hud_draw_num(44, ST_Y + 3, ammo_val, 3, false)
+    hud_draw_num(90, ST_Y + 3, player_health, 3, true)
+    hud_draw_num(221, ST_Y + 3, player_armor, 3, true)
+    hud_draw_arms()
+    hud_draw_keys_bar()
     hud_draw_face()
+    hud_draw_ammo_counts()
 }
 
-func hud_draw_number(x, y, value, digits) {
-    if value < 0 { value = 0 }
-    let num = value
+func hud_draw_num(x, y, value, digits, pct) {
+    let num = if value < 0 { 0 } else { value }
     let d = digits
     let xp = x + (d - 1) * 14
     while d > 0 {
         const digit = num % 10
-        if digit < len(hud_num_patches) && hud_num_patches[digit] != null {
-            hud_draw_patch_to_fb(xp, y, hud_num_patches[digit])
+        const name = f"STTNUM{digit}"
+        const idx = wad_find(name)
+        if idx >= 0 {
+            const p = texture_get_patch(idx)
+            if p != null { hud_blit_patch(xp, y, p) }
         }
         num = num / 10
         xp = xp - 14
         d = d - 1
     }
-}
-
-func hud_draw_percent(x, y) {
-    const pct_idx = wad_find("STTPRCNT")
-    if pct_idx >= 0 {
-        const patch = texture_get_patch(pct_idx)
-        if patch != null { hud_draw_patch_to_fb(x, y, patch) }
+    if pct {
+        const pid = wad_find("STTPRCNT")
+        if pid >= 0 {
+            const pp = texture_get_patch(pid)
+            if pp != null { hud_blit_patch(x + digits * 14, y, pp) }
+        }
     }
 }
 
-func hud_draw_keys() {
-    const key_x = 239
-    const key_names = ["STKEYS0", "STKEYS1", "STKEYS2", "STKEYS3", "STKEYS4", "STKEYS5"]
+func hud_draw_arms() {
+    let i = 0
+    while i < 6 {
+        const has = if i + 2 < NUMWEAPONS { player_weapons[i + 2] } else { false }
+        const name = f"STGNUM{i + 2}"
+        if has {
+            const idx = wad_find(name)
+            if idx >= 0 {
+                const p = texture_get_patch(idx)
+                if p != null { hud_blit_patch(111 + (i % 3) * 12, ST_Y + 4 + (i / 3) * 10, p) }
+            }
+        }
+        i = i + 1
+    }
+}
+
+func hud_draw_keys_bar() {
+    const knames = ["STKEYS0", "STKEYS1", "STKEYS2", "STKEYS3", "STKEYS4", "STKEYS5"]
     let i = 0
     while i < NUMCARDS {
         if player_keys[i] {
-            const kid = wad_find(key_names[i])
+            const kid = wad_find(knames[i])
             if kid >= 0 {
                 const p = texture_get_patch(kid)
-                if p != null { hud_draw_patch_to_fb(key_x, ST_Y + 3 + (i % 3) * 10, p) }
+                if p != null { hud_blit_patch(239, ST_Y + 3 + (i % 3) * 10, p) }
             }
         }
         i = i + 1
@@ -103,29 +141,88 @@ func hud_draw_keys() {
 }
 
 func hud_draw_face() {
-    const health = player_health
-    let face_name = "STFST01"
-    if health > 80 { face_name = "STFST00" }
-    else if health > 60 { face_name = "STFST01" }
-    else if health > 40 { face_name = "STFST02" }
-    else if health > 20 { face_name = "STFST03" }
-    else { face_name = "STFST04" }
-    if player_damagecount > 0 { face_name = "STFOUCH0" }
-    if player_dead { face_name = "STFDEAD0" }
+    const health_idx = if player_health >= 80 { 0 }
+                       else if player_health >= 60 { 1 }
+                       else if player_health >= 40 { 2 }
+                       else if player_health >= 20 { 3 }
+                       else { 4 }
+    let face_name = "STFST"
+    match hud_face_index {
+        0 => { face_name = f"STFST{health_idx}0" },
+        1 => { face_name = f"STFST{health_idx}1" },
+        2 => { face_name = f"STFST{health_idx}2" },
+        3 => { face_name = f"STFTR{health_idx}0" },
+        4 => { face_name = f"STFOUCH{health_idx}" },
+        5 => { face_name = f"STFKILL{health_idx}" },
+        6 => { face_name = "STFDEAD0" },
+        _ => { face_name = f"STFST{health_idx}0" }
+    }
+    if player_powers[pw_invulnerability] > 0 { face_name = "STFGOD0" }
     const fid = wad_find(face_name)
     if fid >= 0 {
         const p = texture_get_patch(fid)
-        if p != null { hud_draw_patch_to_fb(143, ST_Y + 1, p) }
+        if p != null { hud_blit_patch(143, ST_Y + 1, p) }
     }
 }
 
-func hud_draw_patch_to_fb(x, y, patch) {
+func hud_draw_ammo_counts() {
+    const ammo_x = 288
+    const ammo_names = ["BULL", "SHEL", "RCKT", "CELL"]
+    let i = 0
+    while i < NUMAMMO {
+        hud_draw_small_num(ammo_x, ST_Y + 5 + i * 6, player_ammo[i])
+        hud_draw_small_num(ammo_x + 20, ST_Y + 5 + i * 6, player_maxammo[i])
+        i = i + 1
+    }
+}
+
+func hud_draw_small_num(x, y, value) {
+    let num = if value < 0 { 0 } else { value }
+    let xp = x + 2 * 4
+    let d = 3
+    while d > 0 {
+        const digit = num % 10
+        if digit < 10 && y >= 0 && y < SCREENHEIGHT && xp >= 0 && xp + 4 < SCREENWIDTH {
+            let row = 0
+            while row < 6 && y + row < SCREENHEIGHT {
+                let col = 0
+                while col < 4 && xp + col < SCREENWIDTH {
+                    r_framebuffer[(y + row) * SCREENWIDTH + xp + col] = if digit > 0 { 176 } else { 96 }
+                    col = col + 1
+                }
+                row = row + 1
+            }
+        }
+        num = num / 10
+        xp = xp - 4
+        d = d - 1
+    }
+}
+
+func hud_blit_patch(x, y, patch) {
     if patch == null { return }
     let col = 0
     while col < patch["width"] {
         const sx = x + col
         if sx >= 0 && sx < SCREENWIDTH {
-            texture_draw_patch_column(patch, col, r_framebuffer, sx + y * SCREENWIDTH, SCREENHEIGHT - y, null)
+            const data = patch["data"]
+            const col_ofs = read_i32(data, 8 + col * 4)
+            let post_ofs = col_ofs
+            while post_ofs < len(data) {
+                const topdelta = data[post_ofs]
+                if topdelta == 255 { break }
+                const length = data[post_ofs + 1]
+                let j = 0
+                while j < length {
+                    const dy = topdelta + j
+                    const sy = y + dy
+                    if sy >= 0 && sy < SCREENHEIGHT {
+                        r_framebuffer[sy * SCREENWIDTH + sx] = data[post_ofs + 3 + j]
+                    }
+                    j = j + 1
+                }
+                post_ofs = post_ofs + length + 4
+            }
         }
         col = col + 1
     }
@@ -136,60 +233,92 @@ func hud_show_message(msg) {
     hud_message_tics = TICRATE * 4
 }
 
-func hud_draw_message() {
-    let x = 0
+func hud_draw_hud_message() {
+    hud_draw_text(0, 0, hud_message)
+}
+
+func hud_draw_text(x, y, text) {
+    let xp = x
     let i = 0
-    while i < len(hud_message) {
-        const c = hud_message.char_at(i)
+    while i < len(text) {
+        const c = text.char_at(i)
         const code = to_byte(c)
         if code >= 33 && code <= 95 {
-            const name = f"STCFN{code}"
+            const name = f"STCFN0{code}"
             const fid = wad_find(name)
             if fid >= 0 {
                 const p = texture_get_patch(fid)
                 if p != null {
-                    hud_draw_patch_to_fb(x, 0, p)
-                    x = x + p["width"]
-                } else { x = x + 8 }
-            } else { x = x + 8 }
-        } else { x = x + 4 }
+                    hud_blit_patch(xp, y, p)
+                    xp = xp + p["width"]
+                } else { xp = xp + 8 }
+            } else { xp = xp + 8 }
+        } else { xp = xp + 4 }
         i = i + 1
     }
 }
 
-func automap_toggle() {
-    hud_automap = !hud_automap
+func hud_draw_text_large(x, y, text) {
+    let xp = x
+    let i = 0
+    while i < len(text) {
+        const c = text.char_at(i).upper()
+        const code = to_byte(c)
+        if code >= 33 && code <= 90 {
+            const name = if code >= 65 && code <= 90 {
+                f"FONTB{code - 65 + 1}"
+            } else { f"STCFN0{code}" }
+            const fid = wad_find(name)
+            if fid >= 0 {
+                const p = texture_get_patch(fid)
+                if p != null { hud_blit_patch(xp, y, p); xp = xp + p["width"] + 1 }
+                else { xp = xp + 12 }
+            } else { xp = xp + 12 }
+        } else { xp = xp + 6 }
+        i = i + 1
+    }
 }
+
+func automap_toggle() { hud_automap = !hud_automap }
 
 func automap_draw() {
-    if !hud_automap { return }
     let i = 0
-    while i < SCREENWIDTH * VIEWHEIGHT {
-        r_framebuffer[i] = 0
-        i = i + 1
-    }
+    while i < SCREENWIDTH * VIEWHEIGHT { r_framebuffer[i] = 0; i = i + 1 }
     const scale = FRACUNIT / 4
     const cx = VIEWWIDTH / 2
     const cy = VIEWHEIGHT / 2
     for line in map_linedefs {
-        const flags = line["flags"]
-        if (flags & ML_DONTDRAW) != 0 { continue }
+        if (line["flags"] & ML_DONTDRAW) != 0 && (player_powers[pw_allmap] == 0) { continue }
         const x1 = cx + fixed_to_int(fixed_mul(line["v1"]["x"] - player_x, scale))
         const y1 = cy - fixed_to_int(fixed_mul(line["v1"]["y"] - player_y, scale))
         const x2 = cx + fixed_to_int(fixed_mul(line["v2"]["x"] - player_x, scale))
         const y2 = cy - fixed_to_int(fixed_mul(line["v2"]["y"] - player_y, scale))
         let color = 96
         if line["backsector"] == null { color = 176 }
-        else if line["frontsector"]["floorheight"] != line["backsector"]["floorheight"] { color = 64 }
-        else if line["frontsector"]["ceilingheight"] != line["backsector"]["ceilingheight"] { color = 231 }
-        else { color = 104 }
-        if (flags & ML_SECRET) != 0 { color = 176 }
-        automap_draw_line(x1, y1, x2, y2, color)
+        else if line["frontsector"] != null && line["backsector"] != null {
+            if line["frontsector"]["floorheight"] != line["backsector"]["floorheight"] { color = 64 }
+            else if line["frontsector"]["ceilingheight"] != line["backsector"]["ceilingheight"] { color = 231 }
+            else { color = 104 }
+        }
+        if (line["flags"] & ML_SECRET) != 0 { color = 176 }
+        if line["special"] != 0 { color = 220 }
+        am_draw_line(x1, y1, x2, y2, color)
     }
-    automap_draw_player_arrow(cx, cy)
+    am_draw_arrow(cx, cy)
+    for mobj in mobj_list {
+        if mobj["health"] <= 0 && (mobj["flags"] & MF_CORPSE) == 0 { continue }
+        const tx = cx + fixed_to_int(fixed_mul(mobj["x"] - player_x, scale))
+        const ty = cy - fixed_to_int(fixed_mul(mobj["y"] - player_y, scale))
+        if tx >= 0 && tx < VIEWWIDTH && ty >= 0 && ty < VIEWHEIGHT {
+            let c = 112
+            if (mobj["flags"] & MF_COUNTKILL) != 0 { c = 176 }
+            if (mobj["flags"] & MF_SPECIAL) != 0 { c = 112 }
+            r_framebuffer[ty * SCREENWIDTH + tx] = c
+        }
+    }
 }
 
-func automap_draw_line(x1, y1, x2, y2, color) {
+func am_draw_line(x1, y1, x2, y2, color) {
     let dx = abs(x2 - x1)
     let dy = abs(y2 - y1)
     let sx = if x1 < x2 { 1 } else { -1 }
@@ -198,8 +327,7 @@ func automap_draw_line(x1, y1, x2, y2, color) {
     let cx = x1
     let cy = y1
     let steps = 0
-    const max_steps = dx + dy + 1
-    while steps < max_steps {
+    while steps < dx + dy + 1 {
         if cx >= 0 && cx < SCREENWIDTH && cy >= 0 && cy < VIEWHEIGHT {
             r_framebuffer[cy * SCREENWIDTH + cx] = color
         }
@@ -211,46 +339,142 @@ func automap_draw_line(x1, y1, x2, y2, color) {
     }
 }
 
-func automap_draw_player_arrow(cx, cy) {
-    const l = 8
+func am_draw_arrow(cx, cy) {
+    const l = 10
     const a = player_angle
-    const ca = fine_cosine(a)
-    const sa = fine_sine(a)
-    const fx = fixed_to_int(fixed_mul(l << FRACBITS, ca))
-    const fy = -fixed_to_int(fixed_mul(l << FRACBITS, sa))
-    automap_draw_line(cx, cy, cx + fx, cy + fy, 112)
-    automap_draw_line(cx, cy, cx - fy / 2, cy + fx / 2, 112)
-    automap_draw_line(cx, cy, cx + fy / 2, cy - fx / 2, 112)
+    const fx = fixed_to_int(fixed_mul(l << FRACBITS, fine_cosine(a)))
+    const fy = -fixed_to_int(fixed_mul(l << FRACBITS, fine_sine(a)))
+    am_draw_line(cx, cy, cx + fx, cy + fy, 112)
+    const bx1 = cx - fx / 2 - fy / 3
+    const by1 = cy - fy / 2 + fx / 3
+    const bx2 = cx - fx / 2 + fy / 3
+    const by2 = cy - fy / 2 - fx / 3
+    am_draw_line(cx + fx, cy + fy, bx1, by1, 112)
+    am_draw_line(cx + fx, cy + fy, bx2, by2, 112)
 }
 
-func intermission_draw(ep, mi, kills, items, secrets, time_secs) {
+func menu_toggle() { menu_active = !menu_active; menu_current = "main"; menu_item = 0 }
+
+func menu_draw() {
     render_clear_fb()
-    const y = 30
-    hud_draw_text(50, y, f"E{ep}M{mi} COMPLETE")
-    hud_draw_text(50, y + 20, f"KILLS:   {player_killcount}%")
-    hud_draw_text(50, y + 30, f"ITEMS:   {player_itemcount}%")
-    hud_draw_text(50, y + 40, f"SECRETS: {player_secretcount}%")
-    hud_draw_text(50, y + 60, f"TIME: {time_secs / 60}:{(time_secs % 60):02}")
-    hud_draw_text(50, y + 80, "PRESS ENTER TO CONTINUE")
+    const title = match menu_current {
+        "main" => "DOOM",
+        "episode" => "WHICH EPISODE?",
+        "skill" => "CHOOSE SKILL:",
+        "options" => "OPTIONS",
+        _ => ""
+    }
+    hud_draw_text(80, 15, title)
+    const items = menu_items[menu_current]
+    if items == null { return }
+    let i = 0
+    while i < len(items) {
+        const y = 50 + i * 16
+        hud_draw_text(80, y, items[i])
+        if i == menu_item {
+            const skull = if menu_skull_frame == 0 { "M_SKULL1" } else { "M_SKULL2" }
+            const sid = wad_find(skull)
+            if sid >= 0 {
+                const sp = texture_get_patch(sid)
+                if sp != null { hud_blit_patch(54, y - 3, sp) }
+            }
+        }
+        i = i + 1
+    }
 }
 
-func hud_draw_text(x, y, text) {
-    let xp = x
-    let i = 0
-    while i < len(text) {
-        const c = text.char_at(i)
-        const code = to_byte(c)
-        if code >= 33 && code <= 95 {
-            const name = f"STCFN{code}"
-            const fid = wad_find(name)
-            if fid >= 0 {
-                const p = texture_get_patch(fid)
-                if p != null {
-                    hud_draw_patch_to_fb(xp, y, p)
-                    xp = xp + p["width"]
-                } else { xp = xp + 8 }
-            } else { xp = xp + 8 }
-        } else { xp = xp + 4 }
-        i = i + 1
+func menu_key_down(sc) {
+    if !menu_active { return false }
+    const items = menu_items[menu_current]
+    const count = if items != null { len(items) } else { 0 }
+    match sc {
+        SC_UP => { menu_item = (menu_item - 1 + count) % count; return true },
+        SC_DOWN => { menu_item = (menu_item + 1) % count; return true },
+        SC_RETURN => { menu_select(); return true },
+        SC_ESCAPE => {
+            if menu_current == "main" { menu_active = false }
+            else { menu_current = "main"; menu_item = 0 }
+            return true
+        },
+        _ => { return false }
+    }
+}
+
+func menu_select() {
+    match menu_current {
+        "main" => {
+            match menu_item {
+                0 => { menu_current = "episode"; menu_item = 0 },
+                1 => { menu_current = "options"; menu_item = 0 },
+                4 => { game_running = false },
+                _ => {}
+            }
+        },
+        "episode" => {
+            game_episode = menu_item + 1
+            menu_current = "skill"
+            menu_item = 2
+        },
+        "skill" => {
+            game_skill = menu_item
+            menu_active = false
+            game_new(game_episode, 1, game_skill)
+        },
+        "options" => {
+            match menu_item {
+                0 => { menu_current = "main"; menu_item = 0 },
+                _ => {}
+            }
+        },
+        _ => {}
+    }
+}
+
+func intermission_draw(ep, mi, time_secs) {
+    render_clear_fb()
+    const bg = wad_find("WIMAP0")
+    if bg >= 0 {
+        const p = texture_get_patch(bg)
+        if p != null { hud_blit_patch(0, 0, p) }
+    }
+    hud_draw_text(50, 10, "FINISHED")
+    hud_draw_text(50, 30, f"E{ep}M{mi}")
+    const total_kills = len(mobj_list.filter(m => (m["flags"] & MF_COUNTKILL) != 0))
+    const kill_pct = if total_kills > 0 { player_killcount * 100 / total_kills } else { 100 }
+    hud_draw_text(50, 60, f"KILLS: {kill_pct}%")
+    hud_draw_text(50, 76, f"ITEMS: {player_itemcount}%")
+    hud_draw_text(50, 92, f"SECRETS: {player_secretcount}%")
+    hud_draw_text(50, 116, f"TIME: {time_secs / 60}:{time_secs % 60}")
+    hud_draw_text(50, 150, "PRESS ENTER")
+}
+
+func titlescreen_draw() {
+    render_clear_fb()
+    const tid = wad_find("TITLEPIC")
+    if tid >= 0 {
+        const tdata = wad_read(tid)
+        if len(tdata) == 64000 {
+            let i = 0
+            while i < 64000 { r_framebuffer[i] = tdata[i]; i = i + 1 }
+        } else {
+            const p = texture_get_patch(tid)
+            if p != null { hud_blit_patch(0, 0, p) }
+        }
+    }
+}
+
+func finale_draw(ep) {
+    render_clear_fb()
+    const texts = [
+        "Once you beat the big badasses\nand clean out the moon base,\nyou're supposed to win, aren't\nyou? Aren't you? Where's your\nreward and ticket home?\nInstead, the wall of the\nfinal room opens up to reveal\nthe fiery gates of Hell.\nWhat a way to go.",
+        "You've done it! The hideous\ncyber-demon lord that ruled\nthe lost souls has been\nslain and his kingdom\ndismantled forever.",
+        "The loathsome spiderdemon\nthat masterminded the\ninvasion of the moon bases\nis dead. With its death,\nfull tranquility returns to\nthe cosmos."
+    ]
+    const text = if ep >= 1 && ep <= 3 { texts[ep - 1] } else { "You won!" }
+    let y = 10
+    const lines = text.split("\n")
+    for line in lines {
+        hud_draw_text(10, y, line)
+        y = y + 12
     }
 }

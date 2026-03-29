@@ -1,18 +1,35 @@
 let snd_channels = []
 let snd_sfx_cache = {}
 let snd_stream = null
+let snd_music_data = null
 let snd_music_playing = false
+let snd_music_pos = 0
 const SND_SAMPLERATE = 11025
 const SND_MAXCHANNELS = 8
+const SND_MAXDIST = 1200
 
 func sound_init() {
     snd_channels = []
     let i = 0
     while i < SND_MAXCHANNELS {
-        snd_channels.push({"active": false, "data": null, "pos": 0, "vol": 255, "pan": 128, "priority": 0})
+        snd_channels.push({
+            "active": false,
+            "data": null,
+            "pos": 0,
+            "len": 0,
+            "vol_l": 0,
+            "vol_r": 0,
+            "priority": 0,
+            "origin_x": 0,
+            "origin_y": 0,
+            "name": ""
+        })
         i = i + 1
     }
     snd_stream = audio_stream_new(SND_SAMPLERATE)
+    if snd_stream == null {
+        println("WARNING: Audio not available")
+    }
 }
 
 func sound_shutdown() {
@@ -23,46 +40,61 @@ func sound_shutdown() {
     }
 }
 
-func sound_play(name, x, y, priority) {
-    const sfx = sound_load(name)
-    if sfx == null { return }
+func sound_start(name, x, y, priority) {
+    const sfx = sfx_load(name)
+    if sfx == null { return -1 }
     const dist = point_to_dist(player_x, player_y, x, y)
-    if dist > 1200 * FRACUNIT { return }
-    const vol = 255 - fixed_to_int(dist) * 255 / 1200
-    if vol <= 0 { return }
-    const angle = point_to_angle_2(player_x, player_y, x, y)
-    let diff = angle - player_angle
-    while diff > ANG180 { diff = diff - ANG360 }
-    while diff < -ANG180 { diff = diff + ANG360 }
-    const pan = 128 + fixed_to_int(fixed_mul(diff / (ANG90 / 128), 128 << FRACBITS))
-    const clamped_pan = clamp(pan, 0, 255)
-    let best_chan = -1
-    let best_prio = priority + 1
+    const idist = fixed_to_int(dist)
+    if idist > SND_MAXDIST { return -1 }
+    let volume = 255
+    if idist > 0 {
+        volume = 255 - (idist * 255 / SND_MAXDIST)
+    }
+    if volume <= 0 { return -1 }
+    const angle = point_to_angle_2(player_x, player_y, x, y) - player_angle
+    const s = fine_sine(angle)
+    const sep = 128 + fixed_to_int(fixed_mul(s, 128 << FRACBITS))
+    const clamped_sep = clamp(sep, 0, 255)
+    const vol_r = volume * clamped_sep / 255
+    const vol_l = volume * (255 - clamped_sep) / 255
+    let best = -1
+    let lowest_prio = priority + 1
     let i = 0
     while i < SND_MAXCHANNELS {
-        if !snd_channels[i]["active"] { best_chan = i; i = SND_MAXCHANNELS; continue }
-        if snd_channels[i]["priority"] < best_prio {
-            best_prio = snd_channels[i]["priority"]
-            best_chan = i
+        if !snd_channels[i]["active"] {
+            best = i
+            i = SND_MAXCHANNELS
+            continue
+        }
+        if snd_channels[i]["priority"] < lowest_prio {
+            lowest_prio = snd_channels[i]["priority"]
+            best = i
         }
         i = i + 1
     }
-    if best_chan < 0 { return }
-    snd_channels[best_chan] = {
-        "active": true,
-        "data": sfx,
-        "pos": 0,
-        "vol": vol,
-        "pan": clamped_pan,
-        "priority": priority
-    }
+    if best < 0 { return -1 }
+    snd_channels[best]["active"] = true
+    snd_channels[best]["data"] = sfx["samples"]
+    snd_channels[best]["pos"] = 0
+    snd_channels[best]["len"] = sfx["numsamples"]
+    snd_channels[best]["vol_l"] = vol_l
+    snd_channels[best]["vol_r"] = vol_r
+    snd_channels[best]["priority"] = priority
+    snd_channels[best]["origin_x"] = x
+    snd_channels[best]["origin_y"] = y
+    snd_channels[best]["name"] = name
+    best
+}
+
+func sound_play(name, x, y, priority) {
+    sound_start(name, x, y, priority)
 }
 
 func sound_play_global(name) {
-    sound_play(name, player_x, player_y, 200)
+    sound_start(name, player_x, player_y, 200)
 }
 
-func sound_load(name) {
+func sfx_load(name) {
     const uname = name.upper()
     if snd_sfx_cache.has(uname) { return snd_sfx_cache[uname] }
     const lump_name = "DS" + uname
@@ -75,61 +107,228 @@ func sound_load(name) {
     const numsamples = read_i32(data, 4)
     if format != 3 { return null }
     let samples = []
-    let i = 0
-    while i < numsamples && (8 + i) < len(data) {
-        samples.push(data[8 + i])
+    let i = 8
+    let count = 0
+    while count < numsamples && i < len(data) {
+        samples.push(data[i])
         i = i + 1
+        count = count + 1
     }
-    snd_sfx_cache[uname] = samples
-    samples
+    const sfx = {"samples": samples, "numsamples": count, "samplerate": samplerate}
+    snd_sfx_cache[uname] = sfx
+    sfx
 }
 
 func sound_update() {
     if snd_stream == null { return }
-    let mix_buf = []
-    const chunk_size = SND_SAMPLERATE / TICRATE
+    const chunk = SND_SAMPLERATE / TICRATE
+    let buf = []
     let s = 0
-    while s < chunk_size {
-        let left = 0
-        let right = 0
+    while s < chunk {
+        let mix_l = 0
+        let mix_r = 0
         let c = 0
         while c < SND_MAXCHANNELS {
             const ch = snd_channels[c]
-            if ch["active"] && ch["data"] != null {
-                const pos = ch["pos"]
-                if pos < len(ch["data"]) {
-                    const sample = (ch["data"][pos] - 128) * ch["vol"] / 255
-                    const lpan = 255 - ch["pan"]
-                    const rpan = ch["pan"]
-                    left = left + sample * lpan / 255
-                    right = right + sample * rpan / 255
-                    ch["pos"] = pos + 1
+            if ch["active"] {
+                if ch["pos"] < ch["len"] {
+                    const raw = ch["data"][ch["pos"]]
+                    const sample = raw - 128
+                    mix_l = mix_l + (sample * ch["vol_l"] / 255)
+                    mix_r = mix_r + (sample * ch["vol_r"] / 255)
+                    ch["pos"] = ch["pos"] + 1
                 } else {
                     ch["active"] = false
                 }
             }
             c = c + 1
         }
-        left = clamp(left, -128, 127)
-        right = clamp(right, -128, 127)
-        mix_buf.push(left * 256)
-        mix_buf.push(right * 256)
+        if snd_music_playing && snd_music_data != null {
+            if snd_music_pos < len(snd_music_data) {
+                const msample = snd_music_data[snd_music_pos] - 128
+                mix_l = mix_l + msample / 4
+                mix_r = mix_r + msample / 4
+                snd_music_pos = snd_music_pos + 1
+            } else {
+                snd_music_pos = 0
+            }
+        }
+        mix_l = clamp(mix_l, -128, 127)
+        mix_r = clamp(mix_r, -128, 127)
+        buf.push(mix_l * 256)
+        buf.push(mix_r * 256)
         s = s + 1
     }
-    if len(mix_buf) > 0 {
-        audio_write_samples(snd_stream, mix_buf)
+    if len(buf) > 0 {
+        audio_write_samples(snd_stream, buf)
+    }
+}
+
+func sound_stop_channel(channel) {
+    if channel >= 0 && channel < SND_MAXCHANNELS {
+        snd_channels[channel]["active"] = false
+    }
+}
+
+func sound_update_positions() {
+    let c = 0
+    while c < SND_MAXCHANNELS {
+        const ch = snd_channels[c]
+        if ch["active"] {
+            const dist = point_to_dist(player_x, player_y, ch["origin_x"], ch["origin_y"])
+            const idist = fixed_to_int(dist)
+            if idist > SND_MAXDIST {
+                ch["active"] = false
+            } else {
+                let volume = 255 - (idist * 255 / SND_MAXDIST)
+                if volume < 0 { volume = 0 }
+                const angle = point_to_angle_2(player_x, player_y, ch["origin_x"], ch["origin_y"]) - player_angle
+                const s = fine_sine(angle)
+                const sep = clamp(128 + fixed_to_int(fixed_mul(s, 128 << FRACBITS)), 0, 255)
+                ch["vol_r"] = volume * sep / 255
+                ch["vol_l"] = volume * (255 - sep) / 255
+            }
+        }
+        c = c + 1
     }
 }
 
 func music_start(name) {
     const lump_name = "D_" + name.upper()
     const idx = wad_find(lump_name)
-    if idx < 0 { return }
-    snd_music_playing = true
+    if idx < 0 {
+        snd_music_playing = false
+        return
+    }
+    const data = wad_read(idx)
+    if len(data) < 16 {
+        snd_music_playing = false
+        return
+    }
+    const id = read_string(data, 0, 4)
+    if id == "MUS" + chr(26) || id == "MUS\x1A" {
+        snd_music_data = mus_to_pcm(data)
+        snd_music_pos = 0
+        snd_music_playing = true
+    } else {
+        snd_music_data = data
+        snd_music_pos = 0
+        snd_music_playing = true
+    }
 }
 
 func music_stop() {
     snd_music_playing = false
+    snd_music_data = null
+    snd_music_pos = 0
+}
+
+func mus_to_pcm(data) {
+    let pcm = []
+    let channels = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    let volumes = [127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127, 127]
+    const score_len = read_u16(data, 4)
+    const score_start = read_u16(data, 6)
+    let pos = score_start
+    let total_samples = 0
+    const max_samples = SND_SAMPLERATE * 180
+    while pos < len(data) && total_samples < max_samples {
+        if pos >= len(data) { break }
+        const event_byte = data[pos]
+        pos = pos + 1
+        const event_type = (event_byte >> 4) & 7
+        const channel = event_byte & 15
+        const last = (event_byte & 128) != 0
+        match event_type {
+            0 => {
+                if pos < len(data) { channels[channel] = 0; pos = pos + 1 }
+            },
+            1 => {
+                if pos < len(data) {
+                    const note_byte = data[pos]
+                    pos = pos + 1
+                    const note = note_byte & 127
+                    if (note_byte & 128) != 0 && pos < len(data) {
+                        volumes[channel] = data[pos] & 127
+                        pos = pos + 1
+                    }
+                    channels[channel] = note
+                }
+            },
+            2 => {
+                if pos < len(data) {
+                    channels[channel] = data[pos] & 127
+                    pos = pos + 1
+                }
+            },
+            3 => {
+                if pos < len(data) {
+                    const ctrl = data[pos]
+                    pos = pos + 1
+                    if pos < len(data) { pos = pos + 1 }
+                }
+            },
+            4 => {
+                if pos < len(data) {
+                    volumes[channel] = data[pos] & 127
+                    pos = pos + 1
+                }
+            },
+            6 => {},
+            _ => {}
+        }
+        if last {
+            let delay = 0
+            let more = true
+            while more && pos < len(data) {
+                const db = data[pos]
+                pos = pos + 1
+                delay = delay * 128 + (db & 127)
+                more = (db & 128) != 0
+            }
+            const delay_samples = (delay * SND_SAMPLERATE) / 140
+            let ds = 0
+            while ds < delay_samples && total_samples < max_samples {
+                let sample = 0
+                let ch = 0
+                while ch < 16 {
+                    if channels[ch] > 0 {
+                        const freq = 440.0 * (2.0 ** ((channels[ch] - 69) / 12.0))
+                        const phase = (total_samples * freq / SND_SAMPLERATE * 1.0) % 1.0
+                        const wave = if phase < 0.5 { 1 } else { -1 }
+                        sample = sample + wave * volumes[ch] / 127
+                    }
+                    ch = ch + 1
+                }
+                pcm.push(clamp(sample + 128, 0, 255))
+                total_samples = total_samples + 1
+                ds = ds + 1
+            }
+        } else {
+            let si = 0
+            while si < SND_SAMPLERATE / 140 && total_samples < max_samples {
+                let sample = 0
+                let ch = 0
+                while ch < 16 {
+                    if channels[ch] > 0 {
+                        const freq = 440.0 * (2.0 ** ((channels[ch] - 69) / 12.0))
+                        const phase = (total_samples * freq / SND_SAMPLERATE * 1.0) % 1.0
+                        const wave = if phase < 0.5 { 1 } else { -1 }
+                        sample = sample + wave * volumes[ch] / 127
+                    }
+                    ch = ch + 1
+                }
+                pcm.push(clamp(sample + 128, 0, 255))
+                total_samples = total_samples + 1
+                si = si + 1
+            }
+        }
+    }
+    if len(pcm) == 0 {
+        let i = 0
+        while i < SND_SAMPLERATE { pcm.push(128); i = i + 1 }
+    }
+    pcm
 }
 
 const level_music = [
@@ -141,3 +340,23 @@ func music_start_level(episode, mission) {
         music_start(level_music[mission - 1])
     }
 }
+
+const sfx_names = [
+    "PISTOL", "SHOTGN", "SGCOCK", "DSHTGN", "DBOPN", "DBCLS", "DBLOAD",
+    "PLASMA", "BFG", "SAWUP", "SAWIDL", "SAWFUL", "SAWHIT",
+    "RLAUNC", "RXPLOD", "FIRSHT", "FIRXPL", "PSTART", "PSTOP",
+    "DOROPN", "DORCLS", "STNMOV", "SWTCHN", "SWTCHX",
+    "PLPAIN", "DMPAIN", "POPAIN", "SLOP", "ITEMUP", "WPNUP",
+    "OOF", "TELEPT", "POSIT1", "POSIT2", "POSIT3", "BGSIT1", "BGSIT2",
+    "SGTSIT", "CACSIT", "BRSSIT", "CYBSIT", "SPISIT", "BSPSIT",
+    "KNTSIT", "VILSIT", "MANSIT", "PESIT", "SKLATK", "SGTATK",
+    "CLAW", "PLDETH", "PDIEHI", "PODTH1", "PODTH2", "PODTH3",
+    "BGDTH1", "BGDTH2", "SGTDTH", "CACDTH", "SKLDTH", "BRSDTH",
+    "CYBDTH", "SPIDTH", "BSPDTH", "VILDTH", "KNTDTH", "PEDTH",
+    "SKEDTH", "MANDTH", "POSACT", "BGACT", "DMACT",
+    "BSPACT", "BSPWLK", "VILACT", "NOWAY", "BAREXP", "PUNCH",
+    "HOOF", "METAL", "ITMBK", "FLAME", "GETPOW",
+    "BOSPIT", "BOSCUB", "BOSSIT", "BOSPN", "BOSDTH", "MANATK",
+    "MNPAIN", "PEFIST", "PEATKN", "PEDAT", "SKEPCH", "VILATK",
+    "SKLATK", "SKEACT", "SKESIT", "SKEPCH"
+]

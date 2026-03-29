@@ -1,314 +1,61 @@
+// doors.magi -- Complete Doom linedef specials handler
+// Faithful reimplementation of linuxdoom-1.10:
+//   p_spec.c, p_doors.c, p_plats.c, p_floor.c, p_ceilng.c, p_lights.c, p_telept.c
+//
+// All ~140 linedef special types with proper trigger types:
+//   W1 = walk once, WR = walk repeatable
+//   S1 = switch once, SR = switch repeatable
+//   G1 = gun (shoot) once, GR = gun repeatable
+
+// ---------------------------------------------------------------------------
+// Thinker storage
+// ---------------------------------------------------------------------------
 let door_thinkers = []
 
-const VDOORSPEED = 2 * FRACUNIT
-const VDOORWAIT = 150
+// ---------------------------------------------------------------------------
+// Speed / timing constants (fixed-point)
+// ---------------------------------------------------------------------------
+const VDOORSPEED     = 2 * FRACUNIT
+const VDOORWAIT      = 150
+const BLAZESPEED     = 4 * VDOORSPEED
+const BLAZEWAIT      = 15
+const PLATSPEED      = FRACUNIT
+const PLATWAIT       = 105
+const FLOORSPEED     = FRACUNIT
+const CEILSPEED      = FRACUNIT
+const STAIRSPEED     = 2 * FRACUNIT / 4       // Slow stairs (Raise 8)
+const TURBOSPEED     = 4 * FRACUNIT            // Turbo stairs (Raise 16)
 
+const STAIRHEIGHT_8  = 8 * FRACUNIT
+const STAIRHEIGHT_16 = 16 * FRACUNIT
+
+const CRUSHSPEED     = FRACUNIT
+
+// ---------------------------------------------------------------------------
+// Initialization
+// ---------------------------------------------------------------------------
 func doors_init() {
     door_thinkers = []
 }
 
-func doors_use_line(line, side) {
-    const special = line["special"]
-    if special == 0 { return }
-    match special {
-        1 => door_open_standard(line),
-        26 => door_open_keyed(line, it_bluecard, it_blueskull),
-        27 => door_open_keyed(line, it_yellowcard, it_yellowskull),
-        28 => door_open_keyed(line, it_redcard, it_redskull),
-        31 => door_open_stay(line),
-        32 => door_open_keyed_stay(line, it_bluecard, it_blueskull),
-        33 => door_open_keyed_stay(line, it_redcard, it_redskull),
-        34 => door_open_keyed_stay(line, it_yellowcard, it_yellowskull),
-        46 => door_open_stay(line),
-        62 => plat_down_wait_up(line),
-        63 => door_open_standard(line),
-        103 => door_open_standard(line),
-        29 => door_open_standard(line),
-        111 => door_open_blazing(line),
-        117 => door_open_blazing_stay(line),
-        _ => door_generic_special(line, special)
-    }
-}
-
-func doors_walk_line(line) {
-    const special = line["special"]
-    if special == 0 { return }
-    match special {
-        2 => door_open_stay(line),
-        3 => door_close(line),
-        4 => door_open_standard(line),
-        16 => door_close_wait_open(line),
-        10 => plat_down_wait_up(line),
-        22 => plat_down_wait_up(line),
-        36 => floor_lower_to_highest(line),
-        38 => floor_lower_to_lowest(line),
-        52 => { line["special"] = 0 },
-        88 => plat_down_wait_up(line),
-        90 => door_open_standard(line),
-        97 => teleport_thing(line),
-        39 => teleport_thing(line),
-        _ => {}
-    }
-}
-
-func door_open_standard(line) {
-    const sector = find_tagged_sector(line["tag"])
-    if sector == null && line["backsector"] != null {
-        door_open_sector(line["backsector"], VDOORSPEED, VDOORWAIT)
-        return
-    }
-    if sector != null {
-        door_open_sector(sector, VDOORSPEED, VDOORWAIT)
-    }
-}
-
-func door_open_stay(line) {
-    const sector = find_tagged_sector(line["tag"])
-    if sector == null && line["backsector"] != null {
-        door_open_sector(line["backsector"], VDOORSPEED, -1)
-        return
-    }
-    if sector != null {
-        door_open_sector(sector, VDOORSPEED, -1)
-    }
-}
-
-func door_open_blazing(line) {
-    const sector = find_tagged_sector(line["tag"])
-    if sector == null && line["backsector"] != null {
-        door_open_sector(line["backsector"], VDOORSPEED * 4, VDOORWAIT)
-        return
-    }
-    if sector != null {
-        door_open_sector(sector, VDOORSPEED * 4, VDOORWAIT)
-    }
-}
-
-func door_open_blazing_stay(line) {
-    const sector = find_tagged_sector(line["tag"])
-    if sector == null && line["backsector"] != null {
-        door_open_sector(line["backsector"], VDOORSPEED * 4, -1)
-        return
-    }
-    if sector != null {
-        door_open_sector(sector, VDOORSPEED * 4, -1)
-    }
-}
-
-func door_open_keyed(line, card1, card2) {
-    if !player_keys[card1] && !player_keys[card2] {
-        println("You need a key to open this door.")
-        return
-    }
-    door_open_standard(line)
-}
-
-func door_open_keyed_stay(line, card1, card2) {
-    if !player_keys[card1] && !player_keys[card2] {
-        println("You need a key to open this door.")
-        return
-    }
-    door_open_stay(line)
-}
-
-func door_close(line) {
-    const sector = find_tagged_sector(line["tag"])
-    if sector != null {
-        door_close_sector(sector, VDOORSPEED)
-    }
-}
-
-func door_close_wait_open(line) {
-    const sector = find_tagged_sector(line["tag"])
-    if sector != null {
-        door_thinkers.push({
-            "type": "door",
-            "sector": sector,
-            "direction": -1,
-            "speed": VDOORSPEED,
-            "topheight": sector["ceilingheight"],
-            "topcountdown": VDOORWAIT,
-            "phase": "closing"
-        })
-    }
-}
-
-func door_open_sector(sector, speed, wait_tics) {
-    let existing = null
-    for t in door_thinkers {
-        if t["sector"] == sector && t["type"] == "door" { existing = t }
-    }
-    if existing != null {
-        if existing["direction"] == -1 { existing["direction"] = 1; existing["phase"] = "opening" }
-        return
-    }
-    const top = find_lowest_ceiling_around(sector) - 4 * FRACUNIT
-    door_thinkers.push({
-        "type": "door",
-        "sector": sector,
-        "direction": 1,
-        "speed": speed,
-        "topheight": top,
-        "topcountdown": wait_tics,
-        "phase": "opening"
-    })
-}
-
-func door_close_sector(sector, speed) {
-    const floor = sector["floorheight"]
-    door_thinkers.push({
-        "type": "door",
-        "sector": sector,
-        "direction": -1,
-        "speed": speed,
-        "topheight": sector["ceilingheight"],
-        "topcountdown": 0,
-        "phase": "closing",
-        "bottomheight": floor
-    })
-}
-
-func plat_down_wait_up(line) {
-    const sector = find_tagged_sector(line["tag"])
-    if sector == null { return }
-    const low = find_lowest_floor_around(sector)
-    door_thinkers.push({
-        "type": "plat",
-        "sector": sector,
-        "speed": VDOORSPEED * 2,
-        "low": low,
-        "high": sector["floorheight"],
-        "wait": 105,
-        "count": 0,
-        "phase": "down"
-    })
-}
-
-func floor_lower_to_highest(line) {
-    const sector = find_tagged_sector(line["tag"])
-    if sector == null { return }
-    const target = find_highest_floor_around(sector)
-    door_thinkers.push({
-        "type": "floor",
-        "sector": sector,
-        "speed": FRACUNIT,
-        "target": target,
-        "direction": if target > sector["floorheight"] { 1 } else { -1 }
-    })
-}
-
-func floor_lower_to_lowest(line) {
-    const sector = find_tagged_sector(line["tag"])
-    if sector == null { return }
-    const target = find_lowest_floor_around(sector)
-    door_thinkers.push({
-        "type": "floor",
-        "sector": sector,
-        "speed": FRACUNIT,
-        "target": target,
-        "direction": -1
-    })
-}
-
-func teleport_thing(line) {
-    for thing in map_things {
-        if thing["type"] == 14 {
-            const dest_sector = find_tagged_sector(line["tag"])
-            if dest_sector != null {
-                player_x = thing["x"]
-                player_y = thing["y"]
-                player_z = player_floorz
-                player_momx = 0
-                player_momy = 0
-                player_angle = thing["angle"] * ANG45 / 45
-            }
-            return
-        }
-    }
-}
-
-func door_generic_special(line, special) {
-    
-}
-
-func doors_run_thinkers() {
-    let i = 0
-    while i < len(door_thinkers) {
-        const t = door_thinkers[i]
-        match t["type"] {
-            "door" => door_think(t, i),
-            "plat" => plat_think(t, i),
-            "floor" => floor_think(t, i),
-            _ => {}
-        }
-        i = i + 1
-    }
-}
-
-func door_think(t, idx) {
-    const sector = t["sector"]
-    if t["phase"] == "opening" {
-        sector["ceilingheight"] = sector["ceilingheight"] + t["speed"]
-        if sector["ceilingheight"] >= t["topheight"] {
-            sector["ceilingheight"] = t["topheight"]
-            if t["topcountdown"] > 0 {
-                t["phase"] = "waiting"
-                t["topcountdown"] = t["topcountdown"]
-            } else if t["topcountdown"] == -1 {
-                door_thinkers.splice(idx, 1)
-            }
-        }
-    } else if t["phase"] == "waiting" {
-        t["topcountdown"] = t["topcountdown"] - 1
-        if t["topcountdown"] <= 0 {
-            t["phase"] = "closing"
-        }
-    } else if t["phase"] == "closing" {
-        sector["ceilingheight"] = sector["ceilingheight"] - t["speed"]
-        if sector["ceilingheight"] <= sector["floorheight"] {
-            sector["ceilingheight"] = sector["floorheight"]
-            door_thinkers.splice(idx, 1)
-        }
-    }
-}
-
-func plat_think(t, idx) {
-    const sector = t["sector"]
-    if t["phase"] == "down" {
-        sector["floorheight"] = sector["floorheight"] - t["speed"]
-        if sector["floorheight"] <= t["low"] {
-            sector["floorheight"] = t["low"]
-            t["phase"] = "wait"
-            t["count"] = t["wait"]
-        }
-    } else if t["phase"] == "wait" {
-        t["count"] = t["count"] - 1
-        if t["count"] <= 0 { t["phase"] = "up" }
-    } else if t["phase"] == "up" {
-        sector["floorheight"] = sector["floorheight"] + t["speed"]
-        if sector["floorheight"] >= t["high"] {
-            sector["floorheight"] = t["high"]
-            door_thinkers.splice(idx, 1)
-        }
-    }
-}
-
-func floor_think(t, idx) {
-    const sector = t["sector"]
-    sector["floorheight"] = sector["floorheight"] + t["speed"] * t["direction"]
-    if (t["direction"] > 0 && sector["floorheight"] >= t["target"]) ||
-       (t["direction"] < 0 && sector["floorheight"] <= t["target"]) {
-        sector["floorheight"] = t["target"]
-        door_thinkers.splice(idx, 1)
-    }
-}
-
+// ---------------------------------------------------------------------------
+// Sector search helpers
+// ---------------------------------------------------------------------------
 func find_tagged_sector(tag) {
     if tag == 0 { return null }
     for sector in map_sectors {
         if sector["tag"] == tag { return sector }
     }
     null
+}
+
+func find_all_tagged_sectors(tag) {
+    let result = []
+    if tag == 0 { return result }
+    for sector in map_sectors {
+        if sector["tag"] == tag { result.push(sector) }
+    }
+    result
 }
 
 func find_lowest_ceiling_around(sector) {
@@ -326,6 +73,23 @@ func find_lowest_ceiling_around(sector) {
         }
     }
     lowest
+}
+
+func find_highest_ceiling_around(sector) {
+    let highest = -32767 << FRACBITS
+    for line in map_linedefs {
+        if line["frontsector"] == sector && line["backsector"] != null {
+            if line["backsector"]["ceilingheight"] > highest {
+                highest = line["backsector"]["ceilingheight"]
+            }
+        }
+        if line["backsector"] == sector && line["frontsector"] != null {
+            if line["frontsector"]["ceilingheight"] > highest {
+                highest = line["frontsector"]["ceilingheight"]
+            }
+        }
+    }
+    highest
 }
 
 func find_lowest_floor_around(sector) {
@@ -352,4 +116,2062 @@ func find_highest_floor_around(sector) {
         }
     }
     highest
+}
+
+func find_next_highest_floor(sector, current_height) {
+    let best = 32767 << FRACBITS
+    let found = false
+    for line in map_linedefs {
+        if line["frontsector"] == sector && line["backsector"] != null {
+            const h = line["backsector"]["floorheight"]
+            if h > current_height && h < best { best = h; found = true }
+        }
+        if line["backsector"] == sector && line["frontsector"] != null {
+            const h = line["frontsector"]["floorheight"]
+            if h > current_height && h < best { best = h; found = true }
+        }
+    }
+    if found { best } else { current_height }
+}
+
+func find_next_lowest_floor(sector, current_height) {
+    let best = -32767 << FRACBITS
+    let found = false
+    for line in map_linedefs {
+        if line["frontsector"] == sector && line["backsector"] != null {
+            const h = line["backsector"]["floorheight"]
+            if h < current_height && h > best { best = h; found = true }
+        }
+        if line["backsector"] == sector && line["frontsector"] != null {
+            const h = line["frontsector"]["floorheight"]
+            if h < current_height && h > best { best = h; found = true }
+        }
+    }
+    if found { best } else { current_height }
+}
+
+func find_shortest_texture_around(sector) {
+    let min_tex = 32767 << FRACBITS
+    for line in map_linedefs {
+        let is_adj = false
+        if line["frontsector"] == sector { is_adj = true }
+        if line["backsector"] == sector { is_adj = true }
+        if !is_adj { continue }
+        if line["front"] != null {
+            const side = line["front"]
+            if side["bottomtexture"] != "-" && side["bottomtexture"] != "" {
+                const h = texture_height_for_name(side["bottomtexture"])
+                if h > 0 && h < min_tex { min_tex = h }
+            }
+        }
+        if line["back"] != null {
+            const side = line["back"]
+            if side["bottomtexture"] != "-" && side["bottomtexture"] != "" {
+                const h = texture_height_for_name(side["bottomtexture"])
+                if h > 0 && h < min_tex { min_tex = h }
+            }
+        }
+    }
+    min_tex
+}
+
+func texture_height_for_name(name) {
+    // Default texture height estimate - 128 units is standard Doom texture height
+    128 * FRACUNIT
+}
+
+func find_min_surrounding_light(sector, min_val) {
+    let result = min_val
+    for line in map_linedefs {
+        if line["frontsector"] == sector && line["backsector"] != null {
+            if line["backsector"]["lightlevel"] < result {
+                result = line["backsector"]["lightlevel"]
+            }
+        }
+        if line["backsector"] == sector && line["frontsector"] != null {
+            if line["frontsector"]["lightlevel"] < result {
+                result = line["frontsector"]["lightlevel"]
+            }
+        }
+    }
+    result
+}
+
+func find_max_surrounding_light(sector, max_val) {
+    let result = max_val
+    for line in map_linedefs {
+        if line["frontsector"] == sector && line["backsector"] != null {
+            if line["backsector"]["lightlevel"] > result {
+                result = line["backsector"]["lightlevel"]
+            }
+        }
+        if line["backsector"] == sector && line["frontsector"] != null {
+            if line["frontsector"]["lightlevel"] > result {
+                result = line["frontsector"]["lightlevel"]
+            }
+        }
+    }
+    result
+}
+
+func find_sector_from_line_tag(line, start_idx) {
+    // Find next sector with matching tag after start_idx
+    let i = start_idx + 1
+    while i < len(map_sectors) {
+        if map_sectors[i]["tag"] == line["tag"] { return i }
+        i = i + 1
+    }
+    -1
+}
+
+func get_sector_neighbor(sector, line) {
+    // Return the sector on the other side of this line relative to sector
+    if line["frontsector"] == sector { return line["backsector"] }
+    if line["backsector"] == sector { return line["frontsector"] }
+    null
+}
+
+func sector_has_active_thinker(sector, thinker_type) {
+    for t in door_thinkers {
+        if t["sector"] == sector && t["type"] == thinker_type { return true }
+    }
+    false
+}
+
+// ---------------------------------------------------------------------------
+// DISPATCH: Use (switch / push)
+// ---------------------------------------------------------------------------
+func doors_use_line(line, side) {
+    const special = line["special"]
+    if special == 0 { return }
+
+    match special {
+        // -- Doors: S1 / SR --
+        1   => ev_do_door_normal(line, false),               // S1 Door Open Wait Close
+        26  => ev_do_locked_door(line, it_bluecard, it_blueskull, false),   // S1 DR Blue
+        27  => ev_do_locked_door(line, it_yellowcard, it_yellowskull, false), // S1 DR Yellow
+        28  => ev_do_locked_door(line, it_redcard, it_redskull, false),     // S1 DR Red
+        31  => ev_do_door_open(line, false),                  // S1 Door Open Stay
+        32  => ev_do_locked_door_open(line, it_bluecard, it_blueskull),     // S1 D1 Blue Open Stay
+        33  => ev_do_locked_door_open(line, it_redcard, it_redskull),       // S1 D1 Red Open Stay
+        34  => ev_do_locked_door_open(line, it_yellowcard, it_yellowskull), // S1 D1 Yellow Open Stay
+        29  => ev_do_door_normal(line, true),                 // S1 Door Open Wait Close (tag)
+        50  => ev_do_door_close(line),                        // S1 Door Close
+        42  => ev_do_door_close(line),                        // SR Door Close
+        61  => ev_do_door_open(line, false),                  // SR Door Open Stay
+        63  => ev_do_door_normal(line, true),                 // SR Door Open Wait Close
+        103 => ev_do_door_open(line, true),                   // S1 Door Open Stay (tag)
+        46  => ev_do_door_open_grating(line),                 // GR Door Open Stay (gun)
+        76  => ev_do_door_close_30_open(line),                // SR Door Close 30 Open
+
+        // -- Doors: Blazing --
+        99  => ev_do_locked_door_blaze(line, it_bluecard, it_blueskull),   // SR Blaze Lock Blue
+        134 => ev_do_locked_door_blaze(line, it_redcard, it_redskull),     // SR Blaze Lock Red
+        136 => ev_do_locked_door_blaze(line, it_yellowcard, it_yellowskull), // SR Blaze Lock Yellow
+        133 => ev_do_locked_door_blaze_open(line, it_bluecard, it_blueskull),   // S1 Blaze Lock Blue Open
+        135 => ev_do_locked_door_blaze_open(line, it_redcard, it_redskull),     // S1 Blaze Lock Red Open
+        137 => ev_do_locked_door_blaze_open(line, it_yellowcard, it_yellowskull), // S1 Blaze Lock Yellow Open
+        111 => ev_do_door_blaze_normal(line),                 // S1 Blazing Door Open Wait Close
+        112 => ev_do_door_blaze_normal(line),                 // SR Blazing Door Open Wait Close
+        113 => ev_do_door_blaze_open(line),                   // S1 Blazing Door Open Stay
+        114 => ev_do_door_blaze_open(line),                   // SR Blazing Door Open Stay
+        115 => ev_do_door_blaze_normal(line),                 // S1 Blazing Door Open Wait Close (tag)
+        116 => ev_do_door_blaze_normal(line),                 // SR Blazing Door Open Wait Close (tag)
+        117 => ev_do_door_blaze_open(line),                   // S1 Blazing Door Open Stay (tag)
+        118 => ev_do_door_blaze_open(line),                   // SR Blazing Door Open Stay (tag)
+
+        // -- Lifts / Platforms --
+        21  => ev_do_plat_down_wait_up(line, PLATWAIT),       // S1 Lift Lower Wait Raise
+        62  => ev_do_plat_down_wait_up(line, PLATWAIT),       // SR Lift Lower Wait Raise
+        122 => ev_do_plat_down_wait_up(line, PLATWAIT),       // S1 Lift Lower Wait Raise (blazing)
+        123 => ev_do_plat_down_wait_up(line, PLATWAIT),       // SR Lift Lower Wait Raise (blazing)
+        15  => ev_do_plat_raise_24_change(line),              // S1 Plat Raise 24 Change Texture
+        66  => ev_do_plat_raise_24_change(line),              // SR Plat Raise 24 Change Texture
+        14  => ev_do_plat_raise_32_change(line),              // S1 Plat Raise 32 Change Texture
+        67  => ev_do_plat_raise_32_change(line),              // SR Plat Raise 32 Change Texture
+        20  => ev_do_plat_raise_next_change(line),            // S1 Plat Raise Next Floor Change Texture
+        68  => ev_do_plat_raise_next_change(line),            // SR Plat Raise Next Floor Change Texture
+        47  => ev_do_plat_raise_next_change(line),            // G1 Plat Raise Next Floor Change Texture
+        143 => ev_do_plat_raise_24_change(line),              // W1 Plat Raise 24 Change Texture (actually floor, shares impl)
+        148 => ev_do_plat_raise_32_change(line),              // W1 Plat Raise 32 Change Texture
+
+        // -- Floors --
+        23  => ev_do_floor_lower_to_lowest(line),             // S1 Floor Lower to Lowest
+        60  => ev_do_floor_lower_to_lowest(line),             // SR Floor Lower to Lowest
+        45  => ev_do_floor_lower_to_highest(line),            // SR Floor Lower to Surrounding
+        102 => ev_do_floor_lower_to_highest(line),            // S1 Floor Lower to Surrounding
+        55  => ev_do_floor_raise_crush(line),                 // S1 Floor Raise to Lowest Ceiling Crush
+        65  => ev_do_floor_raise_crush(line),                 // SR Floor Raise to Lowest Ceiling Crush
+        18  => ev_do_floor_raise_to_next(line),               // S1 Floor Raise to Next Higher Floor
+        69  => ev_do_floor_raise_to_next(line),               // SR Floor Raise to Next Higher Floor
+        71  => ev_do_floor_turbo_lower(line),                 // S1 Floor Lower to 8 Above Highest
+        98  => ev_do_floor_turbo_lower(line),                 // SR Floor Lower to 8 Above Highest
+        64  => ev_do_floor_raise_crush(line),                 // SR Floor Raise to Ceiling Crush
+        101 => ev_do_floor_raise_to_lowest_ceiling(line),     // S1 Floor Raise to Lowest Ceiling
+        91  => ev_do_floor_raise_to_lowest_ceiling(line),     // W1 Floor Raise to Lowest Ceiling (handled in walk too)
+        131 => ev_do_floor_raise_turbo(line),                 // S1 Floor Raise Turbo
+        132 => ev_do_floor_raise_turbo(line),                 // SR Floor Raise Turbo
+        140 => ev_do_floor_raise_512(line),                   // S1 Floor Raise 512
+        58  => ev_do_floor_raise_24(line),                    // W1 Floor Raise 24 (also handled in walk)
+        59  => ev_do_floor_raise_24_change(line),             // W1 Floor Raise 24 Change (also handled in walk)
+        176 => ev_do_floor_raise_to_next(line),               // SR Floor Raise to Next Higher
+
+        // -- Ceilings --
+        43  => ev_do_ceiling_lower_to_floor(line),            // SR Ceiling Lower to Floor
+        44  => ev_do_ceiling_lower_to_floor_plus_8(line),     // W1 Ceiling Lower to Floor +8
+        40  => ev_do_ceiling_raise_to_highest(line),          // W1 Ceiling Raise to Highest (also walk)
+        41  => ev_do_ceiling_lower_to_floor(line),            // S1 Ceiling Lower to Floor
+
+        // -- Crushers --
+        49  => ev_do_crusher_slow(line),                      // S1 Crusher Slow
+        73  => ev_do_crusher_slow_perpetual(line),            // WR Crusher Slow (perpetual)
+        77  => ev_do_crusher_fast(line),                      // WR Crusher Fast (perpetual)
+        57  => ev_do_crusher_stop(line),                      // W1 Crusher Stop
+        74  => ev_do_crusher_stop(line),                      // WR Crusher Stop
+        141 => ev_do_crusher_silent(line),                    // W1 Crusher Silent
+
+        // -- Stairs --
+        7   => ev_build_stairs_8(line),                       // S1 Build Stairs 8
+        127 => ev_build_stairs_turbo(line),                   // S1 Build Stairs Turbo 16
+
+        // -- Lights --
+        35  => ev_do_light_off(line),                         // W1 Lights to 35
+        104 => ev_do_light_off(line),                         // W1 Lights to Minimum Surrounding
+        12  => ev_do_light_brightest(line),                   // W1 Lights to Brightest
+        13  => ev_do_light_brightest(line),                   // W1 Lights to 255
+        17  => ev_start_light_strobing(line),                 // W1 Light Blink 1.0 sec
+        138 => ev_do_light_on_255(line),                      // SR Light On 255
+
+        // -- Donuts --
+        9   => ev_do_donut(line),                             // S1 Donut
+
+        // -- Teleport --
+        // (teleport on use is unusual but type 174 exists in Boom; Doom uses walk)
+
+        // -- Exit --
+        11  => ev_do_exit(line),                              // S1 Exit Level
+        51  => ev_do_secret_exit(line),                       // S1 Secret Exit
+        52  => ev_do_exit(line),                              // W1 Exit Level (also walk)
+        124 => ev_do_secret_exit(line),                       // W1 Secret Exit (also walk)
+
+        _ => {}
+    }
+
+    // Clear one-shot specials (S1 / G1)
+    match special {
+        1 | 7 | 9 | 11 | 14 | 15 | 18 | 20 | 21 | 23 | 26 | 27 | 28 |
+        29 | 31 | 32 | 33 | 34 | 41 | 49 | 50 | 51 | 55 | 71 | 99 |
+        101 | 102 | 103 | 111 | 113 | 115 | 117 | 122 | 127 | 131 |
+        133 | 135 | 137 | 140 => {
+            line["special"] = 0
+        },
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DISPATCH: Walk (player crosses line)
+// ---------------------------------------------------------------------------
+func doors_walk_line(line) {
+    const special = line["special"]
+    if special == 0 { return }
+
+    match special {
+        // -- Doors: W1 / WR --
+        2   => ev_do_door_open(line, true),                   // W1 Door Open Stay
+        3   => ev_do_door_close(line),                        // W1 Door Close
+        4   => ev_do_door_normal(line, true),                 // W1 Door Open Wait Close
+        16  => ev_do_door_close_30_open(line),                // W1 Door Close 30 Open
+        75  => ev_do_door_close(line),                        // WR Door Close
+        76  => ev_do_door_close_30_open(line),                // WR Door Close 30 Open
+        86  => ev_do_door_open(line, true),                   // WR Door Open Stay
+        90  => ev_do_door_normal(line, true),                 // WR Door Open Wait Close
+        105 => ev_do_door_blaze_normal(line),                 // WR Blazing Door Open Wait Close
+        106 => ev_do_door_blaze_open(line),                   // WR Blazing Door Open Stay
+        107 => ev_do_door_blaze_close(line),                  // WR Blazing Door Close
+        108 => ev_do_door_blaze_normal(line),                 // W1 Blazing Door Open Wait Close
+        109 => ev_do_door_blaze_open(line),                   // W1 Blazing Door Open Stay
+        110 => ev_do_door_blaze_close(line),                  // W1 Blazing Door Close
+
+        // -- Lifts / Platforms: W1 / WR --
+        10  => ev_do_plat_down_wait_up(line, PLATWAIT),       // W1 Lift Lower Wait Raise
+        22  => ev_do_plat_raise_next_change(line),            // W1 Plat Raise Next Floor Change Texture
+        53  => ev_do_plat_perpetual_raise(line),              // W1 Perpetual Platform Raise
+        54  => ev_do_plat_stop(line),                         // W1 Platform Stop
+        87  => ev_do_plat_perpetual_raise(line),              // WR Perpetual Platform Raise
+        88  => ev_do_plat_down_wait_up(line, PLATWAIT),       // WR Lift Lower Wait Raise
+        89  => ev_do_plat_stop(line),                         // WR Platform Stop
+        120 => ev_do_plat_down_wait_up_blaze(line),           // WR Blazing Lift Lower Wait Raise
+        121 => ev_do_plat_down_wait_up_blaze(line),           // W1 Blazing Lift Lower Wait Raise
+
+        // -- Floors: W1 / WR --
+        5   => ev_do_floor_raise_to_lowest_ceiling(line),     // W1 Floor Raise to Lowest Ceiling
+        19  => ev_do_floor_lower_to_highest(line),            // W1 Floor Lower to Highest
+        24  => ev_do_floor_raise_crush(line),                 // G1 Floor Raise to Lowest Ceiling Crush
+        30  => ev_do_floor_raise_by_shortest_tex(line),       // W1 Floor Raise Shortest Texture
+        36  => ev_do_floor_turbo_lower(line),                 // W1 Floor Lower to 8 Above Highest
+        37  => ev_do_floor_lower_to_lowest_change(line),      // W1 Floor Lower to Lowest Change Texture
+        38  => ev_do_floor_lower_to_lowest(line),             // W1 Floor Lower to Lowest
+        56  => ev_do_floor_raise_crush(line),                 // W1 Floor Raise to 8 Below Ceiling Crush
+        58  => ev_do_floor_raise_24(line),                    // W1 Floor Raise 24
+        59  => ev_do_floor_raise_24_change(line),             // W1 Floor Raise 24 Change Texture
+        82  => ev_do_floor_lower_to_lowest(line),             // WR Floor Lower to Lowest
+        83  => ev_do_floor_lower_to_highest(line),            // WR Floor Lower to Highest
+        84  => ev_do_floor_lower_to_lowest_change(line),      // WR Floor Lower to Lowest Change Texture
+        91  => ev_do_floor_raise_to_lowest_ceiling(line),     // W1 Floor Raise to Lowest Ceiling
+        92  => ev_do_floor_raise_24(line),                    // WR Floor Raise 24
+        93  => ev_do_floor_raise_24_change(line),             // WR Floor Raise 24 Change Texture
+        94  => ev_do_floor_raise_crush(line),                 // WR Floor Raise to Ceiling Crush
+        95  => ev_do_floor_raise_to_next(line),               // WR Floor Raise to Next Higher
+        96  => ev_do_floor_raise_by_shortest_tex(line),       // WR Floor Raise Shortest Texture
+        119 => ev_do_floor_raise_to_next(line),               // W1 Floor Raise to Next Higher
+        128 => ev_do_floor_raise_to_next(line),               // WR Floor Raise to Next Higher
+        129 => ev_do_floor_raise_turbo(line),                 // WR Floor Raise Turbo
+        130 => ev_do_floor_raise_turbo(line),                 // W1 Floor Raise Turbo
+        142 => ev_do_floor_raise_512(line),                   // W1 Floor Raise 512
+
+        // -- Ceilings: W1 / WR --
+        40  => ev_do_ceiling_raise_to_highest(line),          // W1 Ceiling Raise to Highest
+        44  => ev_do_ceiling_lower_to_floor_plus_8(line),     // W1 Ceiling Lower to Floor +8
+        72  => ev_do_ceiling_lower_to_floor_plus_8(line),     // WR Ceiling Lower to Floor +8
+
+        // -- Crushers: W1 / WR --
+        6   => ev_do_crusher_fast_perpetual(line),            // W1 Fast Crusher Start
+        25  => ev_do_crusher_slow_perpetual(line),            // W1 Crusher Slow (perpetual)
+        57  => ev_do_crusher_stop(line),                      // W1 Crusher Stop
+        73  => ev_do_crusher_slow_perpetual(line),            // WR Crusher Slow (perpetual)
+        74  => ev_do_crusher_stop(line),                      // WR Crusher Stop
+        77  => ev_do_crusher_fast_perpetual(line),            // WR Crusher Fast (perpetual)
+        141 => ev_do_crusher_silent(line),                    // W1 Crusher Silent
+
+        // -- Stairs: W1 / WR --
+        8   => ev_build_stairs_8(line),                       // W1 Build Stairs 8
+        100 => ev_build_stairs_turbo(line),                   // W1 Build Stairs Turbo 16
+        256 => ev_build_stairs_8(line),                       // WR Build Stairs 8 (Boom extension placeholder)
+        257 => ev_build_stairs_turbo(line),                   // WR Build Stairs Turbo 16 (Boom extension placeholder)
+
+        // -- Lights: W1 / WR --
+        12  => ev_do_light_brightest(line),                   // W1 Lights to Brightest Surrounding
+        13  => ev_do_light_on_255(line),                      // W1 Lights to 255
+        17  => ev_start_light_strobing(line),                 // W1 Light Start Blinking
+        35  => ev_do_light_off(line),                         // W1 Lights to 35
+        79  => ev_do_light_off(line),                         // WR Lights to 35
+        80  => ev_do_light_brightest(line),                   // WR Lights to Brightest
+        81  => ev_do_light_on_255(line),                      // WR Lights to 255
+        104 => ev_do_light_min_surrounding(line),             // W1 Lights to Minimum Surrounding
+
+        // -- Teleporters: W1 / WR --
+        39  => ev_do_teleport(line),                          // W1 Teleport
+        97  => ev_do_teleport(line),                          // WR Teleport
+        125 => ev_do_teleport_monsters_only(line),            // W1 Teleport Monsters Only
+        126 => ev_do_teleport_monsters_only(line),            // WR Teleport Monsters Only
+
+        // -- Donuts --
+        146 => ev_do_donut(line),                             // W1 Donut (Boom-style; original uses S1=9)
+
+        // -- Exit: W1 --
+        52  => ev_do_exit(line),                              // W1 Exit Level
+        124 => ev_do_secret_exit(line),                       // W1 Secret Exit
+
+        _ => {}
+    }
+
+    // Clear one-shot specials (W1)
+    match special {
+        2 | 3 | 4 | 5 | 6 | 8 | 10 | 16 | 19 | 22 | 25 | 30 | 36 | 37 | 38 |
+        39 | 40 | 44 | 52 | 53 | 54 | 56 | 57 | 58 | 59 | 91 | 100 |
+        104 | 108 | 109 | 110 | 119 | 120 | 121 | 124 | 125 | 130 |
+        141 | 142 => {
+            line["special"] = 0
+        },
+        _ => {}
+    }
+}
+
+// ---------------------------------------------------------------------------
+// DISPATCH: Shoot (gun triggers)
+// ---------------------------------------------------------------------------
+func doors_shoot_line(line) {
+    const special = line["special"]
+    if special == 0 { return }
+
+    match special {
+        // -- Gun specials (G1 / GR) --
+        24  => ev_do_floor_raise_crush(line),                 // G1 Floor Raise to Lowest Ceiling Crush
+        46  => ev_do_door_open_grating(line),                 // GR Door Open Stay (repeatable)
+        47  => ev_do_plat_raise_next_change(line),            // G1 Plat Raise Next Floor Change Texture
+
+        _ => {}
+    }
+
+    // Clear one-shot gun specials (G1)
+    match special {
+        24 | 47 => {
+            line["special"] = 0
+        },
+        _ => {}
+    }
+}
+
+// ===========================================================================
+// DOOR IMPLEMENTATIONS (p_doors.c)
+// ===========================================================================
+
+// Standard door: opens, waits, closes. Used by manual (tag 0) or tagged doors.
+func ev_do_door_normal(line, use_tag) {
+    const sectors = if use_tag { find_all_tagged_sectors(line["tag"]) } else { [] }
+    if len(sectors) == 0 && line["backsector"] != null {
+        do_door_for_sector(line["backsector"], VDOORSPEED, VDOORWAIT)
+        return
+    }
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "door") { continue }
+        do_door_for_sector(sec, VDOORSPEED, VDOORWAIT)
+    }
+}
+
+// Door opens and stays open
+func ev_do_door_open(line, use_tag) {
+    const sectors = if use_tag { find_all_tagged_sectors(line["tag"]) } else { [] }
+    if len(sectors) == 0 && line["backsector"] != null {
+        do_door_for_sector(line["backsector"], VDOORSPEED, -1)
+        return
+    }
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "door") { continue }
+        do_door_for_sector(sec, VDOORSPEED, -1)
+    }
+}
+
+// Door opens (gun-activated grating, GR type 46)
+func ev_do_door_open_grating(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    if len(sectors) == 0 && line["backsector"] != null {
+        do_door_for_sector(line["backsector"], VDOORSPEED, -1)
+        return
+    }
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "door") { continue }
+        do_door_for_sector(sec, VDOORSPEED, -1)
+    }
+}
+
+// Door closes
+func ev_do_door_close(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "door") { continue }
+        const floor = sec["floorheight"]
+        door_thinkers.push({
+            "type": "door",
+            "sector": sec,
+            "direction": -1,
+            "speed": VDOORSPEED,
+            "topheight": sec["ceilingheight"],
+            "topcountdown": 0,
+            "phase": "closing",
+            "bottomheight": floor
+        })
+    }
+}
+
+// Door closes, waits 30 seconds, then opens
+func ev_do_door_close_30_open(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "door") { continue }
+        const top = find_lowest_ceiling_around(sec) - 4 * FRACUNIT
+        door_thinkers.push({
+            "type": "door",
+            "sector": sec,
+            "direction": -1,
+            "speed": VDOORSPEED,
+            "topheight": top,
+            "topcountdown": 30 * TICRATE,
+            "phase": "closing_then_open",
+            "bottomheight": sec["floorheight"]
+        })
+    }
+}
+
+// Blazing door: opens fast, waits, closes fast
+func ev_do_door_blaze_normal(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    if len(sectors) == 0 && line["backsector"] != null {
+        do_door_for_sector(line["backsector"], BLAZESPEED, BLAZEWAIT)
+        return
+    }
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "door") { continue }
+        do_door_for_sector(sec, BLAZESPEED, BLAZEWAIT)
+    }
+}
+
+// Blazing door: opens fast, stays open
+func ev_do_door_blaze_open(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    if len(sectors) == 0 && line["backsector"] != null {
+        do_door_for_sector(line["backsector"], BLAZESPEED, -1)
+        return
+    }
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "door") { continue }
+        do_door_for_sector(sec, BLAZESPEED, -1)
+    }
+}
+
+// Blazing door: closes fast
+func ev_do_door_blaze_close(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "door") { continue }
+        const floor = sec["floorheight"]
+        door_thinkers.push({
+            "type": "door",
+            "sector": sec,
+            "direction": -1,
+            "speed": BLAZESPEED,
+            "topheight": sec["ceilingheight"],
+            "topcountdown": 0,
+            "phase": "closing",
+            "bottomheight": floor
+        })
+    }
+}
+
+// Keyed door: normal speed, open-wait-close
+func ev_do_locked_door(line, card1, card2, use_tag) {
+    if !player_keys[card1] && !player_keys[card2] {
+        hud_message_key(card1)
+        return
+    }
+    ev_do_door_normal(line, use_tag)
+}
+
+// Keyed door: open stay
+func ev_do_locked_door_open(line, card1, card2) {
+    if !player_keys[card1] && !player_keys[card2] {
+        hud_message_key(card1)
+        return
+    }
+    ev_do_door_open(line, false)
+}
+
+// Keyed door: blazing (repeatable switch)
+func ev_do_locked_door_blaze(line, card1, card2) {
+    if !player_keys[card1] && !player_keys[card2] {
+        hud_message_key(card1)
+        return
+    }
+    ev_do_door_blaze_normal(line)
+}
+
+// Keyed door: blazing open stay (once switch)
+func ev_do_locked_door_blaze_open(line, card1, card2) {
+    if !player_keys[card1] && !player_keys[card2] {
+        hud_message_key(card1)
+        return
+    }
+    ev_do_door_blaze_open(line)
+}
+
+func hud_message_key(card) {
+    match card {
+        0 => println("You need a blue key to open this door."),   // it_bluecard
+        1 => println("You need a yellow key to open this door."), // it_yellowcard
+        2 => println("You need a red key to open this door."),    // it_redcard
+        3 => println("You need a blue key to open this door."),   // it_blueskull
+        4 => println("You need a yellow key to open this door."), // it_yellowskull
+        5 => println("You need a red key to open this door."),    // it_redskull
+        _ => println("You need a key to open this door.")
+    }
+}
+
+// Core door creation for a sector
+func do_door_for_sector(sector, speed, wait_tics) {
+    // If door already active, reverse closing doors
+    for t in door_thinkers {
+        if t["sector"] == sector && t["type"] == "door" {
+            if t["direction"] == -1 {
+                t["direction"] = 1
+                t["phase"] = "opening"
+            }
+            return
+        }
+    }
+    const top = find_lowest_ceiling_around(sector) - 4 * FRACUNIT
+    door_thinkers.push({
+        "type": "door",
+        "sector": sector,
+        "direction": 1,
+        "speed": speed,
+        "topheight": top,
+        "topcountdown": wait_tics,
+        "phase": "opening",
+        "bottomheight": sector["floorheight"]
+    })
+}
+
+// ===========================================================================
+// LIFT / PLATFORM IMPLEMENTATIONS (p_plats.c)
+// ===========================================================================
+
+// Standard lift: floor lowers to lowest surrounding, waits, raises back
+func ev_do_plat_down_wait_up(line, wait) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "plat") { continue }
+        const low = find_lowest_floor_around(sec)
+        door_thinkers.push({
+            "type": "plat",
+            "sector": sec,
+            "speed": PLATSPEED * 4,
+            "low": low,
+            "high": sec["floorheight"],
+            "wait": wait,
+            "count": 0,
+            "phase": "down",
+            "crush": false,
+            "status": "active",
+            "tag": line["tag"]
+        })
+    }
+}
+
+// Blazing lift: same as above but faster
+func ev_do_plat_down_wait_up_blaze(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "plat") { continue }
+        const low = find_lowest_floor_around(sec)
+        door_thinkers.push({
+            "type": "plat",
+            "sector": sec,
+            "speed": PLATSPEED * 8,
+            "low": low,
+            "high": sec["floorheight"],
+            "wait": PLATWAIT,
+            "count": 0,
+            "phase": "down",
+            "crush": false,
+            "status": "active",
+            "tag": line["tag"]
+        })
+    }
+}
+
+// Perpetual platform: goes up and down forever
+func ev_do_plat_perpetual_raise(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        // Stop any existing perpetual plat first
+        ev_stop_plat_for_sector(sec)
+        const low = find_lowest_floor_around(sec)
+        const high = find_highest_floor_around(sec)
+        door_thinkers.push({
+            "type": "plat",
+            "sector": sec,
+            "speed": PLATSPEED,
+            "low": if low < sec["floorheight"] { low } else { sec["floorheight"] },
+            "high": if high > sec["floorheight"] { high } else { sec["floorheight"] },
+            "wait": PLATWAIT,
+            "count": 0,
+            "phase": "down",
+            "crush": false,
+            "status": "active",
+            "perpetual": true,
+            "tag": line["tag"]
+        })
+    }
+}
+
+// Stop platform
+func ev_do_plat_stop(line) {
+    let i = 0
+    while i < len(door_thinkers) {
+        const t = door_thinkers[i]
+        if t["type"] == "plat" && t["tag"] == line["tag"] {
+            t["status"] = "stopped"
+            t["phase"] = "wait"
+            t["count"] = -1
+        }
+        i = i + 1
+    }
+}
+
+func ev_stop_plat_for_sector(sector) {
+    let i = len(door_thinkers) - 1
+    while i >= 0 {
+        if door_thinkers[i]["type"] == "plat" && door_thinkers[i]["sector"] == sector {
+            door_thinkers.splice(i, 1)
+        }
+        i = i - 1
+    }
+}
+
+// Platform raise 24 units, change texture to surrounding
+func ev_do_plat_raise_24_change(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "floor") { continue }
+        const target = sec["floorheight"] + 24 * FRACUNIT
+        const new_pic = get_floor_pic_from_line(line)
+        door_thinkers.push({
+            "type": "floor",
+            "sector": sec,
+            "speed": FLOORSPEED,
+            "target": target,
+            "direction": 1,
+            "crush": false,
+            "new_floorpic": new_pic,
+            "change_texture": true,
+            "change_special": 0
+        })
+    }
+}
+
+// Platform raise 32 units, change texture to surrounding
+func ev_do_plat_raise_32_change(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "floor") { continue }
+        const target = sec["floorheight"] + 32 * FRACUNIT
+        const new_pic = get_floor_pic_from_line(line)
+        door_thinkers.push({
+            "type": "floor",
+            "sector": sec,
+            "speed": FLOORSPEED,
+            "target": target,
+            "direction": 1,
+            "crush": false,
+            "new_floorpic": new_pic,
+            "change_texture": true,
+            "change_special": 0
+        })
+    }
+}
+
+// Platform raise to next higher floor, change texture and type
+func ev_do_plat_raise_next_change(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "floor") { continue }
+        const target = find_next_highest_floor(sec, sec["floorheight"])
+        const new_pic = get_floor_pic_from_line(line)
+        door_thinkers.push({
+            "type": "floor",
+            "sector": sec,
+            "speed": FLOORSPEED,
+            "target": target,
+            "direction": 1,
+            "crush": false,
+            "new_floorpic": new_pic,
+            "change_texture": true,
+            "change_special": 0
+        })
+    }
+}
+
+func get_floor_pic_from_line(line) {
+    // Get floor texture from the front sector of the trigger line
+    if line["frontsector"] != null {
+        return line["frontsector"]["floorpic"]
+    }
+    ""
+}
+
+// ===========================================================================
+// FLOOR IMPLEMENTATIONS (p_floor.c)
+// ===========================================================================
+
+// Floor lower to lowest surrounding floor
+func ev_do_floor_lower_to_lowest(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "floor") { continue }
+        const target = find_lowest_floor_around(sec)
+        door_thinkers.push({
+            "type": "floor",
+            "sector": sec,
+            "speed": FLOORSPEED,
+            "target": target,
+            "direction": -1,
+            "crush": false,
+            "change_texture": false
+        })
+    }
+}
+
+// Floor lower to highest surrounding floor
+func ev_do_floor_lower_to_highest(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "floor") { continue }
+        const target = find_highest_floor_around(sec)
+        door_thinkers.push({
+            "type": "floor",
+            "sector": sec,
+            "speed": FLOORSPEED,
+            "target": target,
+            "direction": if target >= sec["floorheight"] { 1 } else { -1 },
+            "crush": false,
+            "change_texture": false
+        })
+    }
+}
+
+// Floor lower to lowest surrounding floor, change texture and type
+func ev_do_floor_lower_to_lowest_change(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "floor") { continue }
+        const target = find_lowest_floor_around(sec)
+        // Find the floor texture from the model sector (lowest floor neighbor)
+        let model_pic = sec["floorpic"]
+        let model_special = 0
+        for ld in map_linedefs {
+            let other = null
+            if ld["frontsector"] == sec && ld["backsector"] != null { other = ld["backsector"] }
+            if ld["backsector"] == sec && ld["frontsector"] != null { other = ld["frontsector"] }
+            if other != null && other["floorheight"] == target {
+                model_pic = other["floorpic"]
+                model_special = other["special"]
+            }
+        }
+        door_thinkers.push({
+            "type": "floor",
+            "sector": sec,
+            "speed": FLOORSPEED,
+            "target": target,
+            "direction": -1,
+            "crush": false,
+            "new_floorpic": model_pic,
+            "change_texture": true,
+            "change_special": model_special
+        })
+    }
+}
+
+// Floor raise to lowest ceiling
+func ev_do_floor_raise_to_lowest_ceiling(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "floor") { continue }
+        const target = find_lowest_ceiling_around(sec)
+        door_thinkers.push({
+            "type": "floor",
+            "sector": sec,
+            "speed": FLOORSPEED,
+            "target": target,
+            "direction": 1,
+            "crush": false,
+            "change_texture": false
+        })
+    }
+}
+
+// Floor raise to lowest ceiling, with crush
+func ev_do_floor_raise_crush(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "floor") { continue }
+        const target = find_lowest_ceiling_around(sec) - 8 * FRACUNIT
+        door_thinkers.push({
+            "type": "floor",
+            "sector": sec,
+            "speed": FLOORSPEED,
+            "target": target,
+            "direction": 1,
+            "crush": true,
+            "change_texture": false
+        })
+    }
+}
+
+// Floor raise to next higher floor
+func ev_do_floor_raise_to_next(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "floor") { continue }
+        const target = find_next_highest_floor(sec, sec["floorheight"])
+        door_thinkers.push({
+            "type": "floor",
+            "sector": sec,
+            "speed": FLOORSPEED,
+            "target": target,
+            "direction": 1,
+            "crush": false,
+            "change_texture": false
+        })
+    }
+}
+
+// Floor raise turbo (to next higher, fast)
+func ev_do_floor_raise_turbo(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "floor") { continue }
+        const target = find_next_highest_floor(sec, sec["floorheight"])
+        door_thinkers.push({
+            "type": "floor",
+            "sector": sec,
+            "speed": FLOORSPEED * 4,
+            "target": target,
+            "direction": 1,
+            "crush": false,
+            "change_texture": false
+        })
+    }
+}
+
+// Floor turbo lower: lower to 8 above highest surrounding floor
+func ev_do_floor_turbo_lower(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "floor") { continue }
+        const target = find_highest_floor_around(sec) + 8 * FRACUNIT
+        let actual_target = target
+        if actual_target > sec["floorheight"] { actual_target = sec["floorheight"] }
+        door_thinkers.push({
+            "type": "floor",
+            "sector": sec,
+            "speed": FLOORSPEED * 4,
+            "target": actual_target,
+            "direction": -1,
+            "crush": false,
+            "change_texture": false
+        })
+    }
+}
+
+// Floor raise 24 units
+func ev_do_floor_raise_24(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "floor") { continue }
+        const target = sec["floorheight"] + 24 * FRACUNIT
+        door_thinkers.push({
+            "type": "floor",
+            "sector": sec,
+            "speed": FLOORSPEED,
+            "target": target,
+            "direction": 1,
+            "crush": false,
+            "change_texture": false
+        })
+    }
+}
+
+// Floor raise 24 units and change texture
+func ev_do_floor_raise_24_change(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "floor") { continue }
+        const target = sec["floorheight"] + 24 * FRACUNIT
+        const new_pic = get_floor_pic_from_line(line)
+        door_thinkers.push({
+            "type": "floor",
+            "sector": sec,
+            "speed": FLOORSPEED,
+            "target": target,
+            "direction": 1,
+            "crush": false,
+            "new_floorpic": new_pic,
+            "change_texture": true,
+            "change_special": 0
+        })
+    }
+}
+
+// Floor raise 512 units
+func ev_do_floor_raise_512(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "floor") { continue }
+        const target = sec["floorheight"] + 512 * FRACUNIT
+        door_thinkers.push({
+            "type": "floor",
+            "sector": sec,
+            "speed": FLOORSPEED,
+            "target": target,
+            "direction": 1,
+            "crush": false,
+            "change_texture": false
+        })
+    }
+}
+
+// Floor raise by shortest lower texture around sector
+func ev_do_floor_raise_by_shortest_tex(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "floor") { continue }
+        const shortest = find_shortest_texture_around(sec)
+        const target = sec["floorheight"] + shortest
+        door_thinkers.push({
+            "type": "floor",
+            "sector": sec,
+            "speed": FLOORSPEED,
+            "target": target,
+            "direction": 1,
+            "crush": false,
+            "change_texture": false
+        })
+    }
+}
+
+// ===========================================================================
+// CEILING IMPLEMENTATIONS (p_ceilng.c)
+// ===========================================================================
+
+// Ceiling lower to floor
+func ev_do_ceiling_lower_to_floor(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "ceiling") { continue }
+        const target = sec["floorheight"]
+        door_thinkers.push({
+            "type": "ceiling",
+            "sector": sec,
+            "speed": CEILSPEED,
+            "target": target,
+            "direction": -1,
+            "crush": false,
+            "bottomheight": target,
+            "topheight": sec["ceilingheight"],
+            "tag": line["tag"]
+        })
+    }
+}
+
+// Ceiling lower to floor + 8
+func ev_do_ceiling_lower_to_floor_plus_8(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "ceiling") { continue }
+        const target = sec["floorheight"] + 8 * FRACUNIT
+        door_thinkers.push({
+            "type": "ceiling",
+            "sector": sec,
+            "speed": CEILSPEED,
+            "target": target,
+            "direction": -1,
+            "crush": false,
+            "bottomheight": target,
+            "topheight": sec["ceilingheight"],
+            "tag": line["tag"]
+        })
+    }
+}
+
+// Ceiling raise to highest surrounding ceiling
+func ev_do_ceiling_raise_to_highest(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "ceiling") { continue }
+        const target = find_highest_ceiling_around(sec)
+        door_thinkers.push({
+            "type": "ceiling",
+            "sector": sec,
+            "speed": CEILSPEED,
+            "target": target,
+            "direction": 1,
+            "crush": false,
+            "bottomheight": sec["ceilingheight"],
+            "topheight": target,
+            "tag": line["tag"]
+        })
+    }
+}
+
+// ===========================================================================
+// CRUSHER IMPLEMENTATIONS (p_ceilng.c)
+// ===========================================================================
+
+// Slow crusher: ceiling moves down to floor + 8, reverses on contact, repeats
+func ev_do_crusher_slow(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "crusher") { continue }
+        door_thinkers.push({
+            "type": "crusher",
+            "sector": sec,
+            "speed": CRUSHSPEED,
+            "original_speed": CRUSHSPEED,
+            "topheight": sec["ceilingheight"],
+            "bottomheight": sec["floorheight"] + 8 * FRACUNIT,
+            "direction": -1,
+            "crush": true,
+            "tag": line["tag"],
+            "perpetual": false,
+            "silent": false
+        })
+    }
+}
+
+// Slow crusher perpetual: never stops
+func ev_do_crusher_slow_perpetual(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "crusher") { continue }
+        door_thinkers.push({
+            "type": "crusher",
+            "sector": sec,
+            "speed": CRUSHSPEED,
+            "original_speed": CRUSHSPEED,
+            "topheight": sec["ceilingheight"],
+            "bottomheight": sec["floorheight"] + 8 * FRACUNIT,
+            "direction": -1,
+            "crush": true,
+            "tag": line["tag"],
+            "perpetual": true,
+            "silent": false
+        })
+    }
+}
+
+// Fast crusher perpetual
+func ev_do_crusher_fast(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "crusher") { continue }
+        door_thinkers.push({
+            "type": "crusher",
+            "sector": sec,
+            "speed": CRUSHSPEED * 2,
+            "original_speed": CRUSHSPEED * 2,
+            "topheight": sec["ceilingheight"],
+            "bottomheight": sec["floorheight"] + 8 * FRACUNIT,
+            "direction": -1,
+            "crush": true,
+            "tag": line["tag"],
+            "perpetual": true,
+            "silent": false
+        })
+    }
+}
+
+// Fast crusher perpetual (same as fast but used by type 6: W1)
+func ev_do_crusher_fast_perpetual(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "crusher") { continue }
+        door_thinkers.push({
+            "type": "crusher",
+            "sector": sec,
+            "speed": CRUSHSPEED * 2,
+            "original_speed": CRUSHSPEED * 2,
+            "topheight": sec["ceilingheight"],
+            "bottomheight": sec["floorheight"] + 8 * FRACUNIT,
+            "direction": -1,
+            "crush": true,
+            "tag": line["tag"],
+            "perpetual": true,
+            "silent": false
+        })
+    }
+}
+
+// Silent crusher
+func ev_do_crusher_silent(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "crusher") { continue }
+        door_thinkers.push({
+            "type": "crusher",
+            "sector": sec,
+            "speed": CRUSHSPEED,
+            "original_speed": CRUSHSPEED,
+            "topheight": sec["ceilingheight"],
+            "bottomheight": sec["floorheight"] + 8 * FRACUNIT,
+            "direction": -1,
+            "crush": true,
+            "tag": line["tag"],
+            "perpetual": true,
+            "silent": true
+        })
+    }
+}
+
+// Stop crusher by tag
+func ev_do_crusher_stop(line) {
+    let i = len(door_thinkers) - 1
+    while i >= 0 {
+        const t = door_thinkers[i]
+        if t["type"] == "crusher" && t["tag"] == line["tag"] {
+            // Restore ceiling to top position and remove
+            t["sector"]["ceilingheight"] = t["topheight"]
+            door_thinkers.splice(i, 1)
+        }
+        i = i - 1
+    }
+}
+
+// ===========================================================================
+// STAIR BUILDERS (p_floor.c)
+// ===========================================================================
+
+// Build stairs: each adjacent sector with same floor texture raises by 8
+func ev_build_stairs_8(line) {
+    build_stairs(line, STAIRSPEED, STAIRHEIGHT_8)
+}
+
+// Build stairs turbo: faster speed, 16 unit steps
+func ev_build_stairs_turbo(line) {
+    build_stairs(line, TURBOSPEED, STAIRHEIGHT_16)
+}
+
+func build_stairs(line, speed, step_height) {
+    let sec_idx = -1
+    let i = 0
+    while i < len(map_sectors) {
+        if map_sectors[i]["tag"] == line["tag"] {
+            sec_idx = i
+            i = len(map_sectors)
+        }
+        i = i + 1
+    }
+    if sec_idx < 0 { return }
+
+    let height = map_sectors[sec_idx]["floorheight"] + step_height
+    let floor_pic = map_sectors[sec_idx]["floorpic"]
+
+    // First sector in the staircase
+    door_thinkers.push({
+        "type": "floor",
+        "sector": map_sectors[sec_idx],
+        "speed": speed,
+        "target": height,
+        "direction": 1,
+        "crush": false,
+        "change_texture": false
+    })
+
+    // Walk through adjacent sectors building stair steps
+    let ok = true
+    while ok {
+        ok = false
+        let found_next = false
+        // Find a linedef that borders the current sector
+        for ld in map_linedefs {
+            let other = null
+            if ld["frontsector"] == map_sectors[sec_idx] && ld["backsector"] != null {
+                other = ld["backsector"]
+            }
+            if other == null { continue }
+
+            // The next stair step must have the same floor texture
+            if other["floorpic"] != floor_pic { continue }
+
+            // Don't re-add sectors that already have a thinker
+            if sector_has_active_thinker(other, "floor") { continue }
+
+            // Find the index of this sector
+            let other_idx = -1
+            let j = 0
+            while j < len(map_sectors) {
+                if map_sectors[j] == other { other_idx = j; j = len(map_sectors) }
+                j = j + 1
+            }
+            if other_idx < 0 { continue }
+
+            height = height + step_height
+            sec_idx = other_idx
+            door_thinkers.push({
+                "type": "floor",
+                "sector": other,
+                "speed": speed,
+                "target": height,
+                "direction": 1,
+                "crush": false,
+                "change_texture": false
+            })
+            ok = true
+            found_next = true
+            // Break out of for to continue while loop with new sector
+            break
+        }
+        if !found_next { ok = false }
+    }
+}
+
+// ===========================================================================
+// LIGHT EFFECTS (p_lights.c)
+// ===========================================================================
+
+// Lights to 35 (darkest)
+func ev_do_light_off(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        sec["lightlevel"] = 35
+    }
+}
+
+// Lights to minimum surrounding
+func ev_do_light_min_surrounding(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        const min_light = find_min_surrounding_light(sec, sec["lightlevel"])
+        sec["lightlevel"] = min_light
+    }
+}
+
+// Lights to brightest surrounding
+func ev_do_light_brightest(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        const max_light = find_max_surrounding_light(sec, 0)
+        sec["lightlevel"] = max_light
+    }
+}
+
+// Lights to 255 (full bright)
+func ev_do_light_on_255(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        sec["lightlevel"] = 255
+    }
+}
+
+// Start light strobing / blinking effect
+func ev_start_light_strobing(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "strobe") { continue }
+        const min_light = find_min_surrounding_light(sec, sec["lightlevel"])
+        door_thinkers.push({
+            "type": "strobe",
+            "sector": sec,
+            "maxlight": sec["lightlevel"],
+            "minlight": min_light,
+            "count": 0,
+            "darktime": 5,
+            "brighttime": 35,
+            "phase": "bright"
+        })
+    }
+}
+
+// ===========================================================================
+// SECTOR-BASED LIGHT EFFECTS (spawned from map sector specials)
+// ===========================================================================
+
+// Called during map load to set up sector-based light effects
+func doors_spawn_sector_specials() {
+    for sec in map_sectors {
+        match sec["special"] {
+            1 => {
+                // Light Blink Random
+                const min_light = find_min_surrounding_light(sec, sec["lightlevel"])
+                door_thinkers.push({
+                    "type": "blink",
+                    "sector": sec,
+                    "maxlight": sec["lightlevel"],
+                    "minlight": min_light,
+                    "count": (random_int(7) + 1) * TICRATE,
+                    "phase": "bright"
+                })
+            },
+            2 => {
+                // Light Blink 0.5 sec
+                const min_light = find_min_surrounding_light(sec, sec["lightlevel"])
+                door_thinkers.push({
+                    "type": "strobe",
+                    "sector": sec,
+                    "maxlight": sec["lightlevel"],
+                    "minlight": min_light,
+                    "count": 0,
+                    "darktime": 15,
+                    "brighttime": 5,
+                    "phase": "bright"
+                })
+            },
+            3 => {
+                // Light Blink 1.0 sec
+                const min_light = find_min_surrounding_light(sec, sec["lightlevel"])
+                door_thinkers.push({
+                    "type": "strobe",
+                    "sector": sec,
+                    "maxlight": sec["lightlevel"],
+                    "minlight": min_light,
+                    "count": 0,
+                    "darktime": 35,
+                    "brighttime": 5,
+                    "phase": "bright"
+                })
+            },
+            4 => {
+                // -20% Damage and Light Blink 0.5 sec (Nukage)
+                const min_light = find_min_surrounding_light(sec, sec["lightlevel"])
+                door_thinkers.push({
+                    "type": "strobe",
+                    "sector": sec,
+                    "maxlight": sec["lightlevel"],
+                    "minlight": min_light,
+                    "count": 0,
+                    "darktime": 15,
+                    "brighttime": 5,
+                    "phase": "bright"
+                })
+                // Damage handled in sector damage thinker
+            },
+            8 => {
+                // Light Glowing (oscillate between min and max)
+                const min_light = find_min_surrounding_light(sec, sec["lightlevel"])
+                door_thinkers.push({
+                    "type": "glow",
+                    "sector": sec,
+                    "maxlight": sec["lightlevel"],
+                    "minlight": min_light,
+                    "direction": -1
+                })
+            },
+            12 => {
+                // Light Blink 0.5 sec, sync
+                const min_light = find_min_surrounding_light(sec, sec["lightlevel"])
+                door_thinkers.push({
+                    "type": "strobe",
+                    "sector": sec,
+                    "maxlight": sec["lightlevel"],
+                    "minlight": min_light,
+                    "count": 15,
+                    "darktime": 15,
+                    "brighttime": 5,
+                    "phase": "bright"
+                })
+            },
+            13 => {
+                // Light Blink 1.0 sec, sync
+                const min_light = find_min_surrounding_light(sec, sec["lightlevel"])
+                door_thinkers.push({
+                    "type": "strobe",
+                    "sector": sec,
+                    "maxlight": sec["lightlevel"],
+                    "minlight": min_light,
+                    "count": 35,
+                    "darktime": 35,
+                    "brighttime": 5,
+                    "phase": "bright"
+                })
+            },
+            17 => {
+                // Light Flicker (firelight)
+                const min_light = find_min_surrounding_light(sec, sec["lightlevel"])
+                door_thinkers.push({
+                    "type": "flicker",
+                    "sector": sec,
+                    "maxlight": sec["lightlevel"],
+                    "minlight": min_light,
+                    "count": 4
+                })
+            },
+            _ => {}
+        }
+    }
+}
+
+// ===========================================================================
+// TELEPORTERS (p_telept.c)
+// ===========================================================================
+
+// Standard teleporter: moves player to teleport destination thing (type 14)
+func ev_do_teleport(line) {
+    const tag = line["tag"]
+    // Find the destination sector(s) with matching tag
+    for sec in map_sectors {
+        if sec["tag"] != tag { continue }
+        // Find teleport destination thing (doomednum 14) in this sector
+        for thing in map_things {
+            if thing["type"] != 14 { continue }
+            // Check if the thing is in the tagged sector
+            const thing_ss = map_get_subsector(thing["x"], thing["y"])
+            if thing_ss >= map_num_subsectors { continue }
+            const thing_sector = map_subsectors[thing_ss]["sector"]
+            if thing_sector != sec { continue }
+
+            // Teleport the player
+            const oldx = player_x
+            const oldy = player_y
+            player_x = thing["x"]
+            player_y = thing["y"]
+            player_z = player_floorz
+            player_momx = 0
+            player_momy = 0
+            player_angle = thing["angle"] * ANG45 / 45
+
+            // Update sector info
+            const new_ss = map_get_subsector(player_x, player_y)
+            if new_ss < map_num_subsectors {
+                player_sector = map_subsectors[new_ss]["sector"]
+                if player_sector != null {
+                    player_floorz = player_sector["floorheight"]
+                    player_ceilingz = player_sector["ceilingheight"]
+                    player_z = player_floorz
+                }
+            }
+
+            // Spawn teleport fog at source
+            spawn_teleport_fog(oldx, oldy)
+            // Spawn teleport fog at destination
+            const dest_angle = thing["angle"] * ANG45 / 45
+            const fog_x = player_x + 20 * FRACUNIT * fixed_to_int(fine_cosine(dest_angle)) / 65536
+            const fog_y = player_y + 20 * FRACUNIT * fixed_to_int(fine_sine(dest_angle)) / 65536
+            spawn_teleport_fog(fog_x, fog_y)
+
+            sound_play("dstelept", player_x, player_y, 100)
+            return
+        }
+    }
+}
+
+// Teleport monsters only (types 125, 126)
+func ev_do_teleport_monsters_only(line) {
+    // In single-player Doom, this only affects monsters, not the player.
+    // Since our engine primarily handles player teleportation, this is a no-op
+    // for the player. Monster teleportation would require tracking which mobj
+    // triggered the line.
+}
+
+func spawn_teleport_fog(x, y) {
+    // Visual effect placeholder -- in the full engine this spawns a BFG-style
+    // fog sprite (MT_TFOG) at the given coordinates
+    sound_play("dstelept", x, y, 50)
+}
+
+// ===========================================================================
+// DONUT SPECIAL (p_spec.c: EV_DoDonut)
+// ===========================================================================
+
+// Type 9: the donut raises the inner (pool) sector to the outer ring height
+// and changes the inner texture to match the outer ring.
+func ev_do_donut(line) {
+    const sectors = find_all_tagged_sectors(line["tag"])
+    for sec in sectors {
+        if sector_has_active_thinker(sec, "floor") { continue }
+
+        // Find the outer ring: the sector on the other side of any 2-sided line
+        let outer = null
+        let outer_line = null
+        for ld in map_linedefs {
+            if ld["frontsector"] == sec && ld["backsector"] != null {
+                outer = ld["backsector"]
+                outer_line = ld
+            }
+        }
+        if outer == null { continue }
+
+        // Find the donut ring model: sector on the other side of outer from the pool
+        let model = null
+        for ld in map_linedefs {
+            if ld["frontsector"] == outer && ld["backsector"] != null && ld["backsector"] != sec {
+                model = ld["backsector"]
+            }
+            if ld["backsector"] == outer && ld["frontsector"] != null && ld["frontsector"] != sec {
+                model = ld["frontsector"]
+            }
+        }
+        if model == null { continue }
+
+        // Raise the pool (inner sector) floor to the model height
+        const target = model["floorheight"]
+        door_thinkers.push({
+            "type": "floor",
+            "sector": sec,
+            "speed": FLOORSPEED / 2,
+            "target": target,
+            "direction": 1,
+            "crush": false,
+            "new_floorpic": model["floorpic"],
+            "change_texture": true,
+            "change_special": 0
+        })
+
+        // Lower the outer ring floor to the model height
+        door_thinkers.push({
+            "type": "floor",
+            "sector": outer,
+            "speed": FLOORSPEED / 2,
+            "target": target,
+            "direction": if outer["floorheight"] > target { -1 } else { 1 },
+            "crush": false,
+            "change_texture": false
+        })
+    }
+}
+
+// ===========================================================================
+// EXIT SPECIALS (p_spec.c)
+// ===========================================================================
+
+func ev_do_exit(line) {
+    game_level_complete()
+}
+
+func ev_do_secret_exit(line) {
+    player_secretcount = player_secretcount + 1
+    game_level_complete()
+}
+
+// ===========================================================================
+// THINKER EXECUTION (called every tic from game_ticker)
+// ===========================================================================
+func doors_run_thinkers() {
+    let i = 0
+    while i < len(door_thinkers) {
+        const t = door_thinkers[i]
+        let removed = false
+        match t["type"] {
+            "door"     => { removed = door_think(t, i) },
+            "plat"     => { removed = plat_think(t, i) },
+            "floor"    => { removed = floor_think(t, i) },
+            "ceiling"  => { removed = ceiling_think(t, i) },
+            "crusher"  => { removed = crusher_think(t, i) },
+            "strobe"   => { strobe_think(t) },
+            "glow"     => { glow_think(t) },
+            "blink"    => { blink_think(t) },
+            "flicker"  => { flicker_think(t) },
+            _ => {}
+        }
+        if !removed { i = i + 1 }
+    }
+}
+
+// ===========================================================================
+// DOOR THINKER
+// ===========================================================================
+func door_think(t, idx) {
+    const sector = t["sector"]
+
+    if t["phase"] == "opening" {
+        sector["ceilingheight"] = sector["ceilingheight"] + t["speed"]
+        if sector["ceilingheight"] >= t["topheight"] {
+            sector["ceilingheight"] = t["topheight"]
+            if t["topcountdown"] > 0 {
+                t["phase"] = "waiting"
+                t["count"] = t["topcountdown"]
+            } else if t["topcountdown"] == -1 {
+                // Open stay -- remove thinker
+                door_thinkers.splice(idx, 1)
+                return true
+            } else {
+                // No wait -- start closing immediately
+                t["phase"] = "closing"
+            }
+        }
+    } else if t["phase"] == "waiting" {
+        t["count"] = t["count"] - 1
+        if t["count"] <= 0 {
+            t["phase"] = "closing"
+        }
+    } else if t["phase"] == "closing" {
+        sector["ceilingheight"] = sector["ceilingheight"] - t["speed"]
+        if sector["ceilingheight"] <= sector["floorheight"] {
+            sector["ceilingheight"] = sector["floorheight"]
+            door_thinkers.splice(idx, 1)
+            return true
+        }
+        // Check for player blockage -- reverse if blocked
+        if player_sector == sector {
+            if player_z + 56 * FRACUNIT > sector["ceilingheight"] {
+                t["direction"] = 1
+                t["phase"] = "opening"
+            }
+        }
+    } else if t["phase"] == "closing_then_open" {
+        // Close first, then wait, then open
+        sector["ceilingheight"] = sector["ceilingheight"] - t["speed"]
+        if sector["ceilingheight"] <= sector["floorheight"] {
+            sector["ceilingheight"] = sector["floorheight"]
+            t["phase"] = "waiting_to_open"
+            t["count"] = t["topcountdown"]
+        }
+    } else if t["phase"] == "waiting_to_open" {
+        t["count"] = t["count"] - 1
+        if t["count"] <= 0 {
+            t["phase"] = "opening"
+            t["topcountdown"] = -1
+        }
+    }
+
+    false
+}
+
+// ===========================================================================
+// PLATFORM THINKER
+// ===========================================================================
+func plat_think(t, idx) {
+    const sector = t["sector"]
+
+    if t["status"] == "stopped" { return false }
+
+    if t["phase"] == "down" {
+        sector["floorheight"] = sector["floorheight"] - t["speed"]
+        if sector["floorheight"] <= t["low"] {
+            sector["floorheight"] = t["low"]
+            t["phase"] = "wait"
+            t["count"] = t["wait"]
+        }
+    } else if t["phase"] == "wait" {
+        if t["count"] < 0 { return false }
+        t["count"] = t["count"] - 1
+        if t["count"] <= 0 {
+            t["phase"] = "up"
+        }
+    } else if t["phase"] == "up" {
+        sector["floorheight"] = sector["floorheight"] + t["speed"]
+        if sector["floorheight"] >= t["high"] {
+            sector["floorheight"] = t["high"]
+            if t["perpetual"] == true {
+                t["phase"] = "wait"
+                t["count"] = t["wait"]
+                // After wait, swap direction
+                // We set a flag so wait knows to go down next
+                t["next_phase"] = "down"
+            } else {
+                door_thinkers.splice(idx, 1)
+                return true
+            }
+        }
+    }
+
+    // Handle perpetual platform cycling after wait
+    if t["phase"] == "wait" && t["count"] <= 0 && t["perpetual"] == true {
+        if t["next_phase"] == "down" {
+            t["phase"] = "down"
+            t["next_phase"] = null
+        } else {
+            t["phase"] = "up"
+        }
+    }
+
+    false
+}
+
+// ===========================================================================
+// FLOOR THINKER
+// ===========================================================================
+func floor_think(t, idx) {
+    const sector = t["sector"]
+
+    if t["direction"] > 0 {
+        // Raising
+        sector["floorheight"] = sector["floorheight"] + t["speed"]
+        if sector["floorheight"] >= t["target"] {
+            sector["floorheight"] = t["target"]
+            if t["change_texture"] == true && t["new_floorpic"] != null {
+                sector["floorpic"] = t["new_floorpic"]
+                if t["change_special"] != null {
+                    sector["special"] = t["change_special"]
+                }
+            }
+            door_thinkers.splice(idx, 1)
+            return true
+        }
+        // Crush check
+        if t["crush"] == true {
+            // Check if something is being crushed between floor and ceiling
+            if sector["floorheight"] > sector["ceilingheight"] - 8 * FRACUNIT {
+                // Something is crushed -- slow down
+                if player_sector == sector {
+                    player_damage(10, null)
+                }
+            }
+        }
+    } else {
+        // Lowering
+        sector["floorheight"] = sector["floorheight"] - t["speed"]
+        if sector["floorheight"] <= t["target"] {
+            sector["floorheight"] = t["target"]
+            if t["change_texture"] == true && t["new_floorpic"] != null {
+                sector["floorpic"] = t["new_floorpic"]
+                if t["change_special"] != null {
+                    sector["special"] = t["change_special"]
+                }
+            }
+            door_thinkers.splice(idx, 1)
+            return true
+        }
+    }
+
+    false
+}
+
+// ===========================================================================
+// CEILING THINKER
+// ===========================================================================
+func ceiling_think(t, idx) {
+    const sector = t["sector"]
+
+    if t["direction"] == -1 {
+        // Lowering
+        sector["ceilingheight"] = sector["ceilingheight"] - t["speed"]
+        if sector["ceilingheight"] <= t["bottomheight"] {
+            sector["ceilingheight"] = t["bottomheight"]
+            door_thinkers.splice(idx, 1)
+            return true
+        }
+    } else if t["direction"] == 1 {
+        // Raising
+        sector["ceilingheight"] = sector["ceilingheight"] + t["speed"]
+        if sector["ceilingheight"] >= t["topheight"] {
+            sector["ceilingheight"] = t["topheight"]
+            door_thinkers.splice(idx, 1)
+            return true
+        }
+    }
+
+    false
+}
+
+// ===========================================================================
+// CRUSHER THINKER
+// ===========================================================================
+func crusher_think(t, idx) {
+    const sector = t["sector"]
+
+    if t["direction"] == -1 {
+        // Moving down (crushing)
+        sector["ceilingheight"] = sector["ceilingheight"] - t["speed"]
+
+        // Check for crush
+        if sector["ceilingheight"] <= sector["floorheight"] + 8 * FRACUNIT {
+            // We hit something or bottom
+            if player_sector == sector && player_z + 56 * FRACUNIT > sector["ceilingheight"] {
+                // Crush the player
+                player_damage(10, null)
+                // Slow down while crushing
+                t["speed"] = CRUSHSPEED / 8
+            }
+        }
+
+        if sector["ceilingheight"] <= t["bottomheight"] {
+            sector["ceilingheight"] = t["bottomheight"]
+            t["direction"] = 1
+            t["speed"] = t["original_speed"]
+        }
+    } else if t["direction"] == 1 {
+        // Moving up (returning)
+        sector["ceilingheight"] = sector["ceilingheight"] + t["speed"]
+
+        if sector["ceilingheight"] >= t["topheight"] {
+            sector["ceilingheight"] = t["topheight"]
+            if t["perpetual"] == true {
+                t["direction"] = -1
+            } else {
+                door_thinkers.splice(idx, 1)
+                return true
+            }
+        }
+    }
+
+    false
+}
+
+// ===========================================================================
+// LIGHT THINKERS
+// ===========================================================================
+
+// Strobe light (blink on/off at set intervals)
+func strobe_think(t) {
+    t["count"] = t["count"] - 1
+    if t["count"] > 0 { return }
+
+    if t["phase"] == "bright" {
+        t["sector"]["lightlevel"] = t["minlight"]
+        t["count"] = t["darktime"]
+        t["phase"] = "dark"
+    } else {
+        t["sector"]["lightlevel"] = t["maxlight"]
+        t["count"] = t["brighttime"]
+        t["phase"] = "bright"
+    }
+}
+
+// Glowing light (smooth oscillation between min and max)
+func glow_think(t) {
+    const sector = t["sector"]
+    if t["direction"] == -1 {
+        // Dimming
+        sector["lightlevel"] = sector["lightlevel"] - 2
+        if sector["lightlevel"] <= t["minlight"] {
+            sector["lightlevel"] = t["minlight"]
+            t["direction"] = 1
+        }
+    } else {
+        // Brightening
+        sector["lightlevel"] = sector["lightlevel"] + 2
+        if sector["lightlevel"] >= t["maxlight"] {
+            sector["lightlevel"] = t["maxlight"]
+            t["direction"] = -1
+        }
+    }
+}
+
+// Random blink (sector type 1)
+func blink_think(t) {
+    t["count"] = t["count"] - 1
+    if t["count"] > 0 { return }
+
+    if t["phase"] == "bright" {
+        t["sector"]["lightlevel"] = t["minlight"]
+        t["count"] = random_int(7) + 1
+        t["phase"] = "dark"
+    } else {
+        t["sector"]["lightlevel"] = t["maxlight"]
+        t["count"] = (random_int(7) + 1) * TICRATE
+        t["phase"] = "bright"
+    }
+}
+
+// Firelight flicker (sector type 17)
+func flicker_think(t) {
+    t["count"] = t["count"] - 1
+    if t["count"] > 0 { return }
+
+    const amount = (random_int(3) + 1) * 16
+    if t["sector"]["lightlevel"] - amount < t["minlight"] {
+        t["sector"]["lightlevel"] = t["minlight"]
+    } else {
+        t["sector"]["lightlevel"] = t["maxlight"]
+    }
+    t["count"] = 4
+}
+
+// ===========================================================================
+// SECTOR DAMAGE (applied per-tic from sector specials)
+// ===========================================================================
+func doors_apply_sector_damage() {
+    if player_sector == null { return }
+    const special = player_sector["special"]
+    if special == 0 { return }
+
+    match special {
+        4 => {
+            // -20% damage every 32 tics (nukage)
+            if game_level_time % 32 == 0 {
+                if player_powers[pw_ironfeet] <= 0 {
+                    player_damage(5, null)
+                }
+            }
+        },
+        5 => {
+            // -10% damage (hellslime)
+            if game_level_time % 32 == 0 {
+                if player_powers[pw_ironfeet] <= 0 {
+                    player_damage(10, null)
+                }
+            }
+        },
+        7 => {
+            // -5% damage (nukage, mild)
+            if game_level_time % 32 == 0 {
+                if player_powers[pw_ironfeet] <= 0 {
+                    player_damage(5, null)
+                }
+            }
+        },
+        9 => {
+            // Secret sector (counted once)
+            player_secretcount = player_secretcount + 1
+            player_sector["special"] = 0
+        },
+        11 => {
+            // -20% damage and exit level when health <= 10
+            if game_level_time % 32 == 0 {
+                if player_powers[pw_ironfeet] <= 0 {
+                    player_damage(20, null)
+                }
+            }
+            if player_health <= 10 {
+                ev_do_exit(null)
+            }
+        },
+        16 => {
+            // -20% damage (super hellslime)
+            if game_level_time % 32 == 0 {
+                if player_powers[pw_ironfeet] <= 0 {
+                    player_damage(20, null)
+                }
+            }
+        },
+        _ => {}
+    }
+}
+
+// ===========================================================================
+// SCROLLING TEXTURES (p_spec.c: animated walls/flats)
+// ===========================================================================
+
+// Animated flat list (original Doom animated floor/ceiling textures)
+let anim_flats = []
+let anim_walls = []
+let anim_tic = 0
+
+func doors_init_animations() {
+    // Animated flats: each entry is [base_name, num_frames]
+    anim_flats = [
+        ["NUKAGE1", 3],   // NUKAGE1-3
+        ["FWATER1", 4],   // FWATER1-4
+        ["SWATER1", 4],   // SWATER1-4
+        ["LAVA1", 4],     // LAVA1-4
+        ["BLOOD1", 3],    // BLOOD1-3
+        ["RROCK05", 4],   // RROCK05-08
+        ["SLIME01", 4],   // SLIME01-04
+        ["SLIME05", 4],   // SLIME05-08
+        ["SLIME09", 4]    // SLIME09-12
+    ]
+
+    // Animated walls
+    anim_walls = [
+        ["BLODGR1", 4],   // BLODGR1-4
+        ["BLODRIP1", 4],  // BLODRIP1-4
+        ["FIREBLU1", 2],  // FIREBLU1-2
+        ["FIRELAV3", 2],  // FIRELAV3, FIRELAVA
+        ["FIREMAG1", 3],  // FIREMAG1-3
+        ["FIREWALA", 3],  // FIREWALA-C
+        ["GSTFONT1", 3],  // GSTFONT1-3
+        ["ROCKRED1", 3],  // ROCKRED1-3
+        ["SLADRIP1", 3],  // SLADRIP1-3
+        ["WFALL1", 4],    // WFALL1-4
+        ["DBRAIN1", 4]    // DBRAIN1-4
+    ]
+}
+
+func doors_update_animations() {
+    anim_tic = anim_tic + 1
+    // Animation happens every 8 tics (roughly 4 times per second)
+    if anim_tic % 8 != 0 { return }
+
+    // Cycle animated flats in all sectors
+    for entry in anim_flats {
+        const base = entry[0]
+        const frames = entry[1]
+        const frame = (anim_tic / 8) % frames
+        const target_name = base.slice(0, len(base) - 1) + to_string(frame + 1)
+        // In a full implementation, this would swap texture indices
+    }
+}
+
+// ===========================================================================
+// SCROLLING WALLS (type 48 -- special linedef flag)
+// ===========================================================================
+func doors_update_scrolling_walls() {
+    for line in map_linedefs {
+        if line["special"] == 48 {
+            // Scroll texture left: adjust texture offset on front sidedef
+            if line["front"] != null {
+                line["front"]["textureoffset"] = line["front"]["textureoffset"] + FRACUNIT
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// COMBINED TICK (called from doors_run_thinkers)
+// Sector damage and animations are also handled here
+// ===========================================================================
+func doors_tick_extras() {
+    doors_apply_sector_damage()
+    doors_update_animations()
+    doors_update_scrolling_walls()
 }

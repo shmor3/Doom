@@ -7,218 +7,550 @@ const DI_SOUTHWEST = 5
 const DI_SOUTH = 6
 const DI_SOUTHEAST = 7
 const DI_NODIR = 8
-const NUMDIR = 9
 
 const xspeed = [FRACUNIT, 47000, 0, -47000, -FRACUNIT, -47000, 0, 47000]
 const yspeed = [0, 47000, FRACUNIT, 47000, 0, -47000, -FRACUNIT, -47000]
+const opposite = [DI_WEST, DI_SOUTHWEST, DI_SOUTH, DI_SOUTHEAST, DI_EAST, DI_NORTHEAST, DI_NORTH, DI_NORTHWEST, DI_NODIR]
+const diags = [DI_NORTHWEST, DI_NORTHEAST, DI_SOUTHWEST, DI_SOUTHEAST]
 
-func a_look(mobj) {
-    if mobj["target"] != null && mobj["target"]["health"] > 0 { return }
-    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
-    if dist < 1024 * FRACUNIT {
-        if check_sight(mobj) {
-            mobj["target"] = {"type": "player", "x": player_x, "y": player_y, "health": player_health}
-            if mobj["info"] != null && mobj["info"]["seestate"] >= 0 {
-                mobj_set_state(mobj, mobj["info"]["seestate"])
+func a_look(actor) {
+    actor["threshold"] = 0
+    if actor["sector"] != null && actor["sector"]["soundtarget"] != null {
+        const targ = actor["sector"]["soundtarget"]
+        actor["target"] = targ
+        if (actor["flags"] & MF_AMBUSH) != 0 {
+            if !check_sight(actor) { return }
+        }
+    } else {
+        if !check_sight(actor) { return }
+        actor["target"] = player_mobj_ref()
+    }
+    if actor["info"] != null && actor["info"]["seesound"] != "" {
+        sound_play(actor["info"]["seesound"], actor["x"], actor["y"], 100)
+    }
+    if actor["info"] != null && actor["info"]["seestate"] >= 0 {
+        mobj_set_state(actor, actor["info"]["seestate"])
+    }
+}
+
+func a_chase(actor) {
+    if actor["reactiontime"] > 0 { actor["reactiontime"] = actor["reactiontime"] - 1 }
+    if actor["threshold"] > 0 {
+        if actor["target"] == null || (actor["target"]["health"] != null && actor["target"]["health"] <= 0) {
+            actor["threshold"] = 0
+        } else {
+            actor["threshold"] = actor["threshold"] - 1
+        }
+    }
+    if actor["target"] == null || actor["target"]["health"] <= 0 {
+        actor["target"] = player_mobj_ref()
+        if actor["target"] == null { return }
+    }
+    if (actor["flags"] & MF_JUSTHIT) != 0 {
+        actor["flags"] = actor["flags"] & ((MF_JUSTHIT) ^ -1)
+        actor["movecount"] = 0
+        return
+    }
+    if actor["info"] != null && actor["info"]["meleestate"] >= 0 {
+        const dist = point_to_dist(actor["x"], actor["y"], player_x, player_y)
+        if dist < MELEERANGE {
+            if actor["info"]["attacksound"] != "" {
+                sound_play(actor["info"]["attacksound"], actor["x"], actor["y"], 80)
+            }
+            mobj_set_state(actor, actor["info"]["meleestate"])
+            return
+        }
+    }
+    if actor["info"] != null && actor["info"]["missilestate"] >= 0 {
+        if actor["movecount"] <= 0 || !check_sight(actor) {
+        } else if random_int(256) < 200 {
+            mobj_set_state(actor, actor["info"]["missilestate"])
+            actor["flags"] = actor["flags"] | MF_JUSTATTACKED
+            return
+        }
+    }
+    actor["movecount"] = actor["movecount"] - 1
+    if actor["movecount"] < 0 || !p_move(actor) {
+        p_new_chase_dir(actor)
+    }
+    if actor["info"] != null && actor["info"]["activesound"] != "" {
+        if random_int(256) < 3 {
+            sound_play(actor["info"]["activesound"], actor["x"], actor["y"], 50)
+        }
+    }
+}
+
+func a_face_target(actor) {
+    if actor["target"] == null { return }
+    actor["flags"] = actor["flags"] & ((MF_AMBUSH) ^ -1)
+    actor["angle"] = point_to_angle_2(actor["x"], actor["y"], player_x, player_y)
+    if player_powers[pw_invisibility] > 0 {
+        actor["angle"] = actor["angle"] + ((random_int(256) - 128) << 21)
+    }
+}
+
+func a_posattack(actor) {
+    if actor["target"] == null { return }
+    a_face_target(actor)
+    const angle = actor["angle"] + ((random_int(256) - 128) << 20)
+    sound_play("PISTOL", actor["x"], actor["y"], 80)
+    const damage = ((random_int(256) % 5) + 1) * 3
+    p_line_attack(actor, angle, MISSILERANGE, 0, damage)
+}
+
+func a_sposattack(actor) {
+    if actor["target"] == null { return }
+    a_face_target(actor)
+    sound_play("SHOTGN", actor["x"], actor["y"], 80)
+    let i = 0
+    while i < 3 {
+        const angle = actor["angle"] + ((random_int(256) - 128) << 20)
+        const damage = ((random_int(256) % 5) + 1) * 3
+        p_line_attack(actor, angle, MISSILERANGE, 0, damage)
+        i = i + 1
+    }
+}
+
+func a_cposattack(actor) {
+    if actor["target"] == null { return }
+    a_face_target(actor)
+    sound_play("SHOTGN", actor["x"], actor["y"], 80)
+    const angle = actor["angle"] + ((random_int(256) - 128) << 20)
+    const damage = ((random_int(256) % 5) + 1) * 3
+    p_line_attack(actor, angle, MISSILERANGE, 0, damage)
+}
+
+func a_cposrefire(actor) {
+    a_face_target(actor)
+    if random_int(256) < 40 { return }
+    if actor["target"] == null || actor["target"]["health"] <= 0 || !check_sight(actor) {
+        if actor["info"] != null && actor["info"]["seestate"] >= 0 {
+            mobj_set_state(actor, actor["info"]["seestate"])
+        }
+    }
+}
+
+func a_troopattack(actor) {
+    if actor["target"] == null { return }
+    a_face_target(actor)
+    const dist = point_to_dist(actor["x"], actor["y"], player_x, player_y)
+    if dist < MELEERANGE {
+        sound_play("CLAW", actor["x"], actor["y"], 80)
+        const damage = (random_int(8) + 1) * 3
+        player_damage(damage, actor)
+        return
+    }
+    p_spawn_missile_type(actor, MT_TROOPSHOT)
+}
+
+func a_sargattack(actor) {
+    if actor["target"] == null { return }
+    a_face_target(actor)
+    const dist = point_to_dist(actor["x"], actor["y"], player_x, player_y)
+    if dist < MELEERANGE {
+        const damage = ((random_int(256) % 10) + 1) * 4
+        player_damage(damage, actor)
+    }
+}
+
+func a_headattack(actor) {
+    if actor["target"] == null { return }
+    a_face_target(actor)
+    const dist = point_to_dist(actor["x"], actor["y"], player_x, player_y)
+    if dist < MELEERANGE {
+        const damage = (random_int(6) + 1) * 10
+        player_damage(damage, actor)
+        return
+    }
+    p_spawn_missile_type(actor, MT_HEADSHOT)
+}
+
+func a_bruisattack(actor) {
+    if actor["target"] == null { return }
+    a_face_target(actor)
+    const dist = point_to_dist(actor["x"], actor["y"], player_x, player_y)
+    if dist < MELEERANGE {
+        const damage = (random_int(8) + 1) * 10
+        player_damage(damage, actor)
+        return
+    }
+    p_spawn_missile_type(actor, MT_BRUISERSHOT)
+}
+
+func a_skullattack(actor) {
+    if actor["target"] == null { return }
+    a_face_target(actor)
+    actor["flags"] = actor["flags"] | MF_SKULLFLY
+    sound_play("SKLATK", actor["x"], actor["y"], 80)
+    const angle = actor["angle"]
+    const speed = 20 * FRACUNIT
+    actor["momx"] = fixed_mul(speed, fine_cosine(angle))
+    actor["momy"] = fixed_mul(speed, fine_sine(angle))
+    const dist = point_to_dist(actor["x"], actor["y"], player_x, player_y)
+    const dz = player_viewz - actor["z"]
+    let slope = 0
+    if dist > 0 { slope = fixed_div(dz, dist >> 8) }
+    actor["momz"] = fixed_mul(speed, slope)
+}
+
+func a_cyberattack(actor) {
+    if actor["target"] == null { return }
+    a_face_target(actor)
+    p_spawn_missile_type(actor, MT_ROCKET)
+}
+
+func a_spidattack(actor) {
+    if actor["target"] == null { return }
+    a_face_target(actor)
+    sound_play("SHOTGN", actor["x"], actor["y"], 80)
+    let i = 0
+    while i < 3 {
+        const angle = actor["angle"] + ((random_int(256) - 128) << 20)
+        const damage = ((random_int(256) % 5) + 1) * 3
+        p_line_attack(actor, angle, MISSILERANGE, 0, damage)
+        i = i + 1
+    }
+}
+
+func a_bspiattack(actor) {
+    if actor["target"] == null { return }
+    a_face_target(actor)
+    p_spawn_missile_type(actor, MT_ARACHPLAZ)
+}
+
+func a_skelattack(actor) {
+    if actor["target"] == null { return }
+    a_face_target(actor)
+    p_spawn_missile_type(actor, MT_TRACER)
+}
+
+func a_skelfist(actor) {
+    if actor["target"] == null { return }
+    a_face_target(actor)
+    const dist = point_to_dist(actor["x"], actor["y"], player_x, player_y)
+    if dist < MELEERANGE {
+        const damage = ((random_int(256) % 10) + 1) * 6
+        player_damage(damage, actor)
+    }
+}
+
+func a_fatattack1(actor) {
+    if actor["target"] == null { return }
+    a_face_target(actor)
+    actor["angle"] = actor["angle"] + ANG45 / 8
+    p_spawn_missile_type(actor, MT_FATSHOT)
+}
+
+func a_fatattack2(actor) {
+    if actor["target"] == null { return }
+    a_face_target(actor)
+    actor["angle"] = actor["angle"] - ANG45 / 8
+    p_spawn_missile_type(actor, MT_FATSHOT)
+}
+
+func a_fatattack3(actor) {
+    if actor["target"] == null { return }
+    a_face_target(actor)
+    p_spawn_missile_type(actor, MT_FATSHOT)
+    actor["angle"] = actor["angle"] + ANG45 / 8
+    p_spawn_missile_type(actor, MT_FATSHOT)
+}
+
+func a_vilechase(actor) {
+    for mobj in mobj_list {
+        if (mobj["flags"] & MF_CORPSE) == 0 { continue }
+        if mobj["info"] == null { continue }
+        if mobj["info"]["raisestate"] < 0 { continue }
+        const dist = point_to_dist(actor["x"], actor["y"], mobj["x"], mobj["y"])
+        if dist > 896 * FRACUNIT { continue }
+        actor["target"] = mobj
+        a_face_target(actor)
+        mobj["health"] = mobj["info"]["spawnhealth"]
+        mobj["flags"] = mobj["info"]["flags"]
+        mobj["height"] = mobj["info"]["height"]
+        mobj_set_state(mobj, mobj["info"]["raisestate"])
+        return
+    }
+    a_chase(actor)
+}
+
+func a_vileattack(actor) {
+    if actor["target"] == null { return }
+    a_face_target(actor)
+    if !check_sight(actor) { return }
+    sound_play("BAREXP", actor["x"], actor["y"], 100)
+    player_damage(20, actor)
+    player_momx = player_momx + fixed_mul(1000 * FRACUNIT, fine_cosine(actor["angle"]))
+    player_momy = player_momy + fixed_mul(1000 * FRACUNIT, fine_sine(actor["angle"]))
+}
+
+func a_pain(actor) {
+    if actor["info"] != null && actor["info"]["painsound"] != "" {
+        sound_play(actor["info"]["painsound"], actor["x"], actor["y"], 80)
+    }
+}
+
+func a_painattack(actor) {
+    if actor["target"] == null { return }
+    a_face_target(actor)
+    a_painshootskull(actor, actor["angle"])
+}
+
+func a_painshootskull(actor, angle) {
+    const skull = mobj_spawn(
+        actor["x"] + fixed_mul(64 * FRACUNIT, fine_cosine(angle)),
+        actor["y"] + fixed_mul(64 * FRACUNIT, fine_sine(angle)),
+        3006
+    )
+    if skull != null {
+        skull["target"] = player_mobj_ref()
+        a_skullattack(skull)
+    }
+}
+
+func a_paindie(actor) {
+    a_fall(actor)
+    a_painshootskull(actor, actor["angle"] + ANG90)
+    a_painshootskull(actor, actor["angle"] + ANG180)
+    a_painshootskull(actor, actor["angle"] + ANG270)
+}
+
+func a_fall(actor) {
+    actor["flags"] = actor["flags"] & ((MF_SOLID) ^ -1)
+}
+
+func a_scream(actor) {
+    if actor["info"] != null && actor["info"]["deathsound"] != "" {
+        sound_play(actor["info"]["deathsound"], actor["x"], actor["y"], 100)
+    }
+}
+
+func a_xscream(actor) {
+    sound_play("SLOP", actor["x"], actor["y"], 100)
+}
+
+func a_keendie(actor) {
+    a_fall(actor)
+    let all_dead = true
+    for mobj in mobj_list {
+        if mobj["type"] == actor["type"] && mobj["health"] > 0 { all_dead = false }
+    }
+    if all_dead {
+        for line in map_linedefs {
+            if line["tag"] == 666 { door_open_tagged(666) }
+        }
+    }
+}
+
+func a_bossdeath(actor) {
+    if game_episode == 1 && game_mission == 8 {
+        let all_dead = true
+        for mobj in mobj_list {
+            if mobj["type"] == actor["type"] && mobj != actor && mobj["health"] > 0 {
+                all_dead = false
+            }
+        }
+        if all_dead {
+            for line in map_linedefs {
+                if line["tag"] == 666 {
+                    floor_lower_to_lowest_tagged(666)
+                }
             }
         }
     }
 }
 
-func a_chase(mobj) {
-    if mobj["reactiontime"] > 0 { mobj["reactiontime"] = mobj["reactiontime"] - 1 }
-    if mobj["target"] == null || mobj["target"]["health"] <= 0 {
-        mobj["target"] = {"type": "player", "x": player_x, "y": player_y, "health": player_health}
-    }
-    if mobj["threshold"] > 0 { mobj["threshold"] = mobj["threshold"] - 1 }
-    const target = mobj["target"]
-    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
-    if mobj["info"] != null && mobj["info"]["meleestate"] >= 0 && dist < MELEERANGE {
-        a_face_target(mobj)
-        mobj_set_state(mobj, mobj["info"]["meleestate"])
-        return
-    }
-    if mobj["info"] != null && mobj["info"]["missilestate"] >= 0 && mobj["movecount"] <= 0 {
-        if check_sight(mobj) && random_int(256) < 200 {
-            a_face_target(mobj)
-            mobj_set_state(mobj, mobj["info"]["missilestate"])
-            mobj["movecount"] = random_int(15) + 5
-            return
-        }
-    }
-    mobj["movecount"] = mobj["movecount"] - 1
-    if mobj["movecount"] < 0 || !mobj_try_walk(mobj) {
-        mobj_new_chase_dir(mobj)
-    }
-    if mobj["movedir"] != DI_NODIR {
-        const speed = mobj["speed"]
-        const dir = mobj["movedir"]
-        if dir < 8 {
-            mobj["momx"] = fixed_mul(speed, xspeed[dir])
-            mobj["momy"] = fixed_mul(speed, yspeed[dir])
-        }
-    }
+func a_hoof(actor) {
+    sound_play("HOOF", actor["x"], actor["y"], 80)
+    a_chase(actor)
 }
 
-func a_face_target(mobj) {
-    mobj["angle"] = point_to_angle_2(mobj["x"], mobj["y"], player_x, player_y)
+func a_metal(actor) {
+    sound_play("METAL", actor["x"], actor["y"], 80)
+    a_chase(actor)
 }
 
-func a_pos_attack(mobj) {
-    a_face_target(mobj)
-    const damage = (random_int(5) + 1) * 3
-    p_line_attack(mobj, mobj["angle"], MISSILERANGE, 0, damage)
+func a_babymetal(actor) {
+    sound_play("BSPWLK", actor["x"], actor["y"], 80)
+    a_chase(actor)
 }
 
-func a_spos_attack(mobj) {
-    a_face_target(mobj)
-    let i = 0
-    while i < 3 {
-        const angle = mobj["angle"] + ((random_int(256) - 128) << 18)
-        const damage = (random_int(5) + 1) * 3
-        p_line_attack(mobj, angle, MISSILERANGE, 0, damage)
-        i = i + 1
-    }
+func a_brainspit(actor) {
+    // Icon of Sin cube spawner - spawns monster cubes
 }
 
-func a_troop_attack(mobj) {
-    a_face_target(mobj)
-    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
-    if dist < MELEERANGE {
-        const damage = (random_int(8) + 1) * 3
-        player_damage(damage, mobj)
+func a_spawnfly(actor) {
+    // Cube lands and spawns monster
+}
+
+func a_braindie(actor) {
+    // Game over on Icon of Sin death
+    game_level_complete()
+}
+
+func a_brainscream(actor) {
+    sound_play("BOSDTH", actor["x"], actor["y"], 100)
+}
+
+func a_brainpain(actor) {
+    sound_play("BOSPN", actor["x"], actor["y"], 100)
+}
+
+func a_brainexplode(actor) {
+    // Explosion effects
+}
+
+func a_fire(actor) {
+    // Archvile fire column
+}
+
+func a_startfire(actor) {
+    a_fire(actor)
+}
+
+func a_firecrackle(actor) {
+    sound_play("FLAME", actor["x"], actor["y"], 60)
+    a_fire(actor)
+}
+
+func a_tracer(actor) {
+    // Revenant homing missile tracking
+    if actor["target"] == null { return }
+    const exact = point_to_angle_2(actor["x"], actor["y"], player_x, player_y)
+    let diff = exact - actor["angle"]
+    while diff > ANG180 { diff = diff - ANG360 }
+    while diff < -ANG180 { diff = diff + ANG360 }
+    const turn_amount = ANG45 / 16
+    if diff > 0 {
+        if diff > turn_amount { actor["angle"] = actor["angle"] + turn_amount }
+        else { actor["angle"] = exact }
     } else {
-        p_spawn_missile(mobj, "MT_TROOPSHOT")
+        if diff < -turn_amount { actor["angle"] = actor["angle"] - turn_amount }
+        else { actor["angle"] = exact }
     }
+    const speed = actor["speed"]
+    actor["momx"] = fixed_mul(speed, fine_cosine(actor["angle"]))
+    actor["momy"] = fixed_mul(speed, fine_sine(actor["angle"]))
 }
 
-func a_sarg_attack(mobj) {
-    a_face_target(mobj)
-    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
-    if dist < MELEERANGE {
-        const damage = (random_int(10) + 1) * 4
-        player_damage(damage, mobj)
-    }
-}
-
-func a_head_attack(mobj) {
-    a_face_target(mobj)
-    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
-    if dist < MELEERANGE {
-        const damage = (random_int(6) + 1) * 10
-        player_damage(damage, mobj)
-    } else {
-        p_spawn_missile(mobj, "MT_HEADSHOT")
-    }
-}
-
-func a_skull_attack(mobj) {
-    a_face_target(mobj)
-    mobj["flags"] = mobj["flags"] | MF_SKULLFLY
-    const angle = mobj["angle"]
-    mobj["momx"] = fixed_mul(20 * FRACUNIT, fine_cosine(angle))
-    mobj["momy"] = fixed_mul(20 * FRACUNIT, fine_sine(angle))
-    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
-    const dz = player_viewz - mobj["z"]
-    const slope = if dist != 0 { fixed_div(dz, dist) } else { 0 }
-    mobj["momz"] = fixed_mul(20 * FRACUNIT, slope)
-}
-
-func a_bruis_attack(mobj) {
-    a_face_target(mobj)
-    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
-    if dist < MELEERANGE {
-        const damage = (random_int(8) + 1) * 10
-        player_damage(damage, mobj)
-    } else {
-        p_spawn_missile(mobj, "MT_BRUISERSHOT")
-    }
-}
-
-func a_cyber_attack(mobj) {
-    a_face_target(mobj)
-    p_spawn_missile(mobj, "MT_ROCKET")
-}
-
-func a_spid_attack(mobj) {
-    a_face_target(mobj)
-    let i = 0
-    while i < 3 {
-        const angle = mobj["angle"] + ((random_int(256) - 128) << 18)
-        const damage = (random_int(5) + 1) * 3
-        p_line_attack(mobj, angle, MISSILERANGE, 0, damage)
-        i = i + 1
-    }
-}
-
-func a_pain(mobj) {
-    // pain sound would play here
-}
-
-func a_fall(mobj) {
-    mobj["flags"] = mobj["flags"] & (MF_SOLID ^ -1)
-}
-
-func a_scream(mobj) {
-    // death sound
-}
-
-func a_xscream(mobj) {
-    // extreme death sound
-}
-
-func check_sight(mobj) {
+func check_sight(actor) {
     if player_dead { return false }
-    const sector_m = mobj["sector"]
-    if sector_m != null && player_sector != null {
-        if map_check_reject(sector_m["index"], player_sector["index"]) { return false }
+    if actor["sector"] != null && player_sector != null {
+        if map_check_reject(actor["sector"]["index"], player_sector["index"]) { return false }
     }
-    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
+    const dist = point_to_dist(actor["x"], actor["y"], player_x, player_y)
     if dist > 2048 * FRACUNIT { return false }
     true
 }
 
-func mobj_try_walk(mobj) {
-    if mobj["movedir"] == DI_NODIR { return false }
-    const speed = mobj["speed"]
-    const dir = mobj["movedir"]
-    if dir >= 8 { return false }
-    const newx = mobj["x"] + fixed_mul(speed, xspeed[dir])
-    const newy = mobj["y"] + fixed_mul(speed, yspeed[dir])
+func p_move(actor) {
+    if actor["movedir"] == DI_NODIR { return false }
+    if actor["movedir"] >= 8 { return false }
+    const speed = actor["speed"]
+    const tryx = actor["x"] + fixed_mul(speed, xspeed[actor["movedir"]])
+    const tryy = actor["y"] + fixed_mul(speed, yspeed[actor["movedir"]])
+    if p_try_move_mobj(actor, tryx, tryy) {
+        actor["x"] = tryx
+        actor["y"] = tryy
+        return true
+    }
+    if (actor["flags"] & MF_FLOAT) != 0 && p_check_float(actor) {
+        return true
+    }
+    false
+}
+
+func p_try_move_mobj(actor, newx, newy) {
+    const radius = actor["radius"]
+    let i = 0
+    while i < map_num_linedefs {
+        const line = map_linedefs[i]
+        if newx + radius < line["bbox"]["left"] || newx - radius > line["bbox"]["right"] ||
+           newy + radius < line["bbox"]["bottom"] || newy - radius > line["bbox"]["top"] {
+            i = i + 1; continue
+        }
+        const side1 = point_on_side(actor["x"], actor["y"], line["v1"]["x"], line["v1"]["y"], line["dx"], line["dy"])
+        const side2 = point_on_side(newx, newy, line["v1"]["x"], line["v1"]["y"], line["dx"], line["dy"])
+        if side1 == side2 { i = i + 1; continue }
+        if (line["flags"] & ML_BLOCKING) != 0 { return false }
+        if (line["flags"] & ML_BLOCKMONSTERS) != 0 { return false }
+        if line["backsector"] == null { return false }
+        const front = line["frontsector"]
+        const back = line["backsector"]
+        if front == null || back == null { return false }
+        const opening_floor = if back["floorheight"] > front["floorheight"] { back["floorheight"] } else { front["floorheight"] }
+        const opening_ceil = if back["ceilingheight"] < front["ceilingheight"] { back["ceilingheight"] } else { front["ceilingheight"] }
+        if opening_ceil - opening_floor < actor["height"] { return false }
+        if opening_floor - actor["z"] > 24 * FRACUNIT { return false }
+        if line["special"] != 0 { doors_walk_line(line) }
+        i = i + 1
+    }
     true
 }
 
-func mobj_new_chase_dir(mobj) {
-    const dx = player_x - mobj["x"]
-    const dy = player_y - mobj["y"]
+func p_check_float(actor) {
+    const dz = player_z - actor["z"]
+    if dz > 0 { actor["z"] = actor["z"] + FLOATSPEED }
+    if dz < 0 { actor["z"] = actor["z"] - FLOATSPEED }
+    true
+}
+
+func p_new_chase_dir(actor) {
+    if actor["target"] == null { return }
+    const dx = player_x - actor["x"]
+    const dy = player_y - actor["y"]
     let d1 = DI_NODIR
     let d2 = DI_NODIR
+    let tdir = DI_NODIR
     if dx > 10 * FRACUNIT { d1 = DI_EAST }
     else if dx < -10 * FRACUNIT { d1 = DI_WEST }
     if dy > 10 * FRACUNIT { d2 = DI_NORTH }
     else if dy < -10 * FRACUNIT { d2 = DI_SOUTH }
     if d1 != DI_NODIR && d2 != DI_NODIR {
-        const diags = [[DI_NODIR]*3, [DI_NODIR]*3, [DI_NODIR]*3]
-        if d1 == DI_EAST && d2 == DI_NORTH { mobj["movedir"] = DI_NORTHEAST }
-        else if d1 == DI_EAST && d2 == DI_SOUTH { mobj["movedir"] = DI_SOUTHEAST }
-        else if d1 == DI_WEST && d2 == DI_NORTH { mobj["movedir"] = DI_NORTHWEST }
-        else if d1 == DI_WEST && d2 == DI_SOUTH { mobj["movedir"] = DI_SOUTHWEST }
-        else { mobj["movedir"] = d1 }
-    } else if d1 != DI_NODIR {
-        mobj["movedir"] = d1
-    } else if d2 != DI_NODIR {
-        mobj["movedir"] = d2
-    } else {
-        mobj["movedir"] = random_int(8)
+        const idx = (if d2 == DI_NORTH { 0 } else { 2 }) + (if d1 == DI_EAST { 0 } else { 1 })
+        actor["movedir"] = diags[idx]
+        if p_try_walk(actor) { return }
     }
-    mobj["movecount"] = random_int(15) + 5
+    if random_int(256) > 200 || abs(dy) > abs(dx) {
+        const tmp = d1; d1 = d2; d2 = tmp
+    }
+    if d1 != DI_NODIR {
+        actor["movedir"] = d1
+        if p_try_walk(actor) { return }
+    }
+    if d2 != DI_NODIR {
+        actor["movedir"] = d2
+        if p_try_walk(actor) { return }
+    }
+    if actor["movedir"] != DI_NODIR {
+        const old = actor["movedir"]
+        actor["movedir"] = old
+        if p_try_walk(actor) { return }
+    }
+    tdir = 0
+    while tdir < 8 {
+        if tdir != opposite[actor["movedir"]] {
+            actor["movedir"] = tdir
+            if p_try_walk(actor) { return }
+        }
+        tdir = tdir + 1
+    }
+    if opposite[actor["movedir"]] != DI_NODIR {
+        actor["movedir"] = opposite[actor["movedir"]]
+        if p_try_walk(actor) { return }
+    }
+    actor["movedir"] = DI_NODIR
+}
+
+func p_try_walk(actor) {
+    if !p_move(actor) { return false }
+    actor["movecount"] = random_int(16)
+    true
 }
 
 func p_line_attack(source, angle, range, slope, damage) {
     const cos_a = fine_cosine(angle)
     const sin_a = fine_sine(angle)
-    const dx = fixed_mul(range, cos_a)
-    const dy = fixed_mul(range, sin_a)
     const dist = point_to_dist(source["x"], source["y"], player_x, player_y)
     if dist < range {
         const ang_to_player = point_to_angle_2(source["x"], source["y"], player_x, player_y)
@@ -229,18 +561,76 @@ func p_line_attack(source, angle, range, slope, damage) {
             player_damage(damage, source)
         }
     }
+    for mobj in mobj_list {
+        if (mobj["flags"] & MF_SHOOTABLE) == 0 { continue }
+        if mobj["health"] <= 0 { continue }
+        if mobj == source { continue }
+        const d = point_to_dist(source["x"], source["y"], mobj["x"], mobj["y"])
+        if d >= range { continue }
+        const a = point_to_angle_2(source["x"], source["y"], mobj["x"], mobj["y"])
+        let adiff = a - angle
+        while adiff > ANG180 { adiff = adiff - ANG360 }
+        while adiff < -ANG180 { adiff = adiff + ANG360 }
+        const half_a = point_to_angle_2(0, 0, d, mobj["radius"])
+        if abs(adiff) < half_a {
+            mobj_damage(mobj, null, source, damage)
+        }
+    }
 }
 
-func p_spawn_missile(source, missile_type) {
+const MT_TROOPSHOT = 10001
+const MT_HEADSHOT = 10002
+const MT_BRUISERSHOT = 10003
+const MT_ROCKET = 10004
+const MT_ARACHPLAZ = 10005
+const MT_TRACER = 10006
+const MT_FATSHOT = 10007
+
+func p_spawn_missile_type(source, mtype) {
     const angle = source["angle"]
     const speed = 20 * FRACUNIT
-    const mx = fixed_mul(speed, fine_cosine(angle))
-    const my = fixed_mul(speed, fine_sine(angle))
-    const missile = mobj_spawn(source["x"], source["y"] + 32 * FRACUNIT, 0)
+    const missile = mobj_spawn(
+        source["x"] + fixed_mul(32 * FRACUNIT, fine_cosine(angle)),
+        source["y"] + fixed_mul(32 * FRACUNIT, fine_sine(angle)),
+        0
+    )
     if missile != null {
-        missile["momx"] = mx
-        missile["momy"] = my
-        missile["angle"] = angle
+        missile["momx"] = fixed_mul(speed, fine_cosine(angle))
+        missile["momy"] = fixed_mul(speed, fine_sine(angle))
         missile["flags"] = MF_MISSILE | MF_NOBLOCKMAP | MF_NOGRAVITY
+        missile["angle"] = angle
+        missile["type"] = mtype
+        const dist = point_to_dist(source["x"], source["y"], player_x, player_y)
+        const dz = player_viewz - source["z"]
+        if dist > 0 {
+            missile["momz"] = fixed_div(dz, dist >> (FRACBITS - 3))
+        }
+    }
+}
+
+func player_mobj_ref() {
+    {"type": "player", "x": player_x, "y": player_y, "z": player_z, "health": player_health, "radius": 16 * FRACUNIT, "height": 56 * FRACUNIT}
+}
+
+func door_open_tagged(tag) {
+    for sector in map_sectors {
+        if sector["tag"] == tag {
+            door_open_sector(sector, VDOORSPEED, -1)
+        }
+    }
+}
+
+func floor_lower_to_lowest_tagged(tag) {
+    for sector in map_sectors {
+        if sector["tag"] == tag {
+            const target = find_lowest_floor_around(sector)
+            door_thinkers.push({
+                "type": "floor",
+                "sector": sector,
+                "speed": FRACUNIT,
+                "target": target,
+                "direction": -1
+            })
+        }
     }
 }

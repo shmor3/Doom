@@ -1,43 +1,151 @@
+// ==========================================================================
+// render.magi -- Complete Doom software renderer
+//
+// Faithful recreation of the original Doom rendering pipeline:
+//   r_main.c   - setup, entry point, angle/projection tables
+//   r_bsp.c    - BSP traversal, seg clipping (handled in bsp.magi + here)
+//   r_segs.c   - wall segment rendering, texture mapping
+//   r_plane.c  - visplane rendering (floors/ceilings)
+//   r_things.c - sprite rendering with occlusion
+//   r_draw.c   - column/span drawing primitives
+//
+// 320x200 palette-indexed framebuffer, blit to SDL at 3x scale
+// ==========================================================================
+
+// =========================================================================
+// R_MAIN: Global rendering state
+// =========================================================================
+
+// Framebuffer: 320x200 palette-indexed pixels
 let r_framebuffer = []
+
+// Per-column occlusion tracking (solidsegs system)
+// 0 = open, 1 = fully occluded by a solid wall
 let r_occlusion = []
+
+// Per-column clip bounds for sprite/two-sided line clipping
+// r_floorclip[x]   = lowest open row (exclusive) for this column
+// r_ceilingclip[x]  = highest open row (exclusive) for this column
 let r_floorclip = []
 let r_ceilingclip = []
-let r_viewangle = 0
+
+// View state: player eye position and orientation
 let r_viewx = 0
 let r_viewy = 0
 let r_viewz = 0
+let r_viewangle = 0
 let r_viewsin = 0
 let r_viewcos = 0
+
+// Projection constants
 let r_centerx = 0
 let r_centery = 0
 let r_projection = 0
-let r_vissprites = []
-let r_visplanes = []
-let r_screenheightarray = []
+
+// Angle-to-screen-column lookup table (r_main.c: viewangletox equivalent)
+// r_xtoviewangle[0..VIEWWIDTH] maps screen column to view-relative angle
 let r_xtoviewangle = []
 
+// Per-column distance scale cache (computed during wall rendering)
+let r_screenheightarray = []
+
+// Vissprite list: sprites projected into screen space for deferred rendering
+let r_vissprites = []
+
+// Visplane list: floor/ceiling surface descriptors
+let r_visplanes = []
+
+// Clip segments: linked list of horizontal screen ranges that are occluded
+// Each entry: {"first": x1, "last": x2} representing a solid column range
+let r_clipsegs = []
+const MAXCLIPSEGS = 256
+
+// Per-column wall scale cache: used for sprite clipping against walls
+let r_wallscale = []
+
+// Extra light from weapon flash
+let r_extralight = 0
+
+// Distance-to-column scale lookup for flat rendering
+let r_yslope = []
+
+// Pre-computed distance scale table for wall rendering
+let r_distscale = []
+
+// Pre-computed base colormap index per column (for walls)
+let r_walllights = []
+
+// Number of visplanes currently active
+let r_numvisplanes = 0
+
+// Visplane constants
+const MAXVISPLANES = 256
+const MAXOPENINGS = 4096
+
+// Visplane open/close tracking arrays
+let r_visplane_open = []
+
+// Fixed-point constants for the renderer
+const HEIGHTBITS = 12
+const HEIGHTUNIT = 1 << HEIGHTBITS
+
+// Fuzz effect table for MF_SHADOW (partial invisibility) -- from r_draw.c
+const FUZZTABLE = 50
+const fuzzoffset = [
+    1, -1, 1, -1, 1, 1, -1, 1, 1, -1,
+    1, 1, 1, -1, 1, 1, 1, -1, -1, -1,
+    -1, 1, -1, -1, 1, 1, 1, 1, -1, 1,
+    -1, 1, 1, -1, -1, 1, 1, -1, -1, -1,
+    -1, 1, 1, 1, 1, -1, 1, 1, -1, 1
+]
+let r_fuzzpos = 0
+
+// Sky rendering state
+let r_sky_texnum = -1
+let r_sky_texmid = 100 << FRACBITS
+const SKYFLATNUM = -999
+
+// Sprite sort array (distance-sorted vissprites)
+let r_sortedsprites = []
+
+// =========================================================================
+// R_MAIN: Initialization
+// =========================================================================
+
 func render_init() {
+    // Allocate framebuffer
     r_framebuffer = []
     let i = 0
     while i < SCREENWIDTH * SCREENHEIGHT {
         r_framebuffer.push(0)
         i = i + 1
     }
+
+    // Allocate per-column arrays
     r_occlusion = []
     r_floorclip = []
     r_ceilingclip = []
     r_screenheightarray = []
+    r_wallscale = []
+    r_distscale = []
     i = 0
     while i < SCREENWIDTH {
         r_occlusion.push(0)
         r_floorclip.push(VIEWHEIGHT)
         r_ceilingclip.push(-1)
         r_screenheightarray.push(0)
+        r_wallscale.push(0)
+        r_distscale.push(0)
         i = i + 1
     }
+
+    // Projection setup (r_main.c: R_InitPointToAngle, R_InitTables)
     r_centerx = VIEWWIDTH / 2
     r_centery = VIEWHEIGHT / 2
     r_projection = r_centerx << FRACBITS
+
+    // Build xtoviewangle table (r_main.c: R_InitTextureMapping)
+    // Maps each screen column to the view-relative angle it represents
     r_xtoviewangle = []
     i = 0
     while i < VIEWWIDTH + 1 {
@@ -47,30 +155,100 @@ func render_init() {
         r_xtoviewangle.push(a)
         i = i + 1
     }
+
+    // Build yslope table for flat rendering (r_plane.c: R_InitPlanes)
+    // yslope[y] = projection / abs(y - centery) -- used for floor/ceiling distance
+    r_yslope = []
+    i = 0
+    while i < VIEWHEIGHT {
+        const dy = abs(i - r_centery) + 1
+        r_yslope.push(fixed_div(r_projection, dy << FRACBITS))
+        i = i + 1
+    }
+
+    // Build distscale table (r_main.c: R_InitTextureMapping)
+    // distscale[x] = 1 / cos(xtoviewangle[x]) -- perspective correction
+    i = 0
+    while i < VIEWWIDTH {
+        const angle = r_xtoviewangle[i]
+        const cosval = fine_cosine(angle & (ANG360 - 1))
+        if cosval != 0 {
+            r_distscale[i] = fixed_div(FRACUNIT, abs(cosval))
+        } else {
+            r_distscale[i] = FRACUNIT
+        }
+        i = i + 1
+    }
+
+    // Allocate visplane tracking
+    r_visplanes = []
+    r_visplane_open = []
+
+    // Initialize BSP subsystem
     bsp_init()
 }
 
+// =========================================================================
+// R_MAIN: Render player view -- top-level entry point
+// =========================================================================
+
 func render_player_view() {
+    // R_SetupFrame: establish viewpoint from player state
     r_viewx = player_x
     r_viewy = player_y
     r_viewz = player_viewz
     r_viewangle = player_angle
     r_viewsin = fine_sine(r_viewangle)
     r_viewcos = fine_cosine(r_viewangle)
-    r_vissprites = []
-    r_visplanes = []
+    r_extralight = player_extralight
+
+    // R_ClearClipSegs: initialize the clip range list
+    // Start with a single open range spanning the full screen
+    r_clipsegs = []
+    r_clipsegs.push({"first": -2147483647, "last": -1})
+    r_clipsegs.push({"first": VIEWWIDTH, "last": 2147483647})
+
+    // Clear per-column state
     let i = 0
     while i < SCREENWIDTH {
         r_occlusion[i] = 0
         r_floorclip[i] = VIEWHEIGHT
         r_ceilingclip[i] = -1
+        r_wallscale[i] = 0
         i = i + 1
     }
+
+    // Clear sprite and visplane lists
+    r_vissprites = []
+    r_numvisplanes = 0
+    r_visplanes = []
+
+    // Allocate the initial "default" visplanes for floor/ceiling sentinel
+    r_visplane_alloc(0, 0, 0, 0, VIEWWIDTH - 1)
+    r_visplane_alloc(0, 0, 0, 0, VIEWWIDTH - 1)
+
+    // Clear framebuffer
     render_clear_fb()
+
+    // Find sky texture
+    if r_sky_texnum < 0 {
+        r_sky_texnum = texture_find_index("SKY1")
+    }
+
+    // R_RenderBSPNode: traverse BSP tree front-to-back, rendering segs
     bsp_new_validcount()
     r_render_bsp_node(map_num_nodes - 1, r_render_subsector)
+
+    // R_DrawPlanes: render all visplanes (floors and ceilings)
+    r_draw_all_visplanes()
+
+    // R_DrawMasked: render sprites (deferred from BSP traversal)
     r_draw_vissprites()
 }
+
+// =========================================================================
+// R_MAIN: Clear framebuffer
+// =========================================================================
 
 func render_clear_fb() {
     let i = 0
@@ -80,11 +258,24 @@ func render_clear_fb() {
     }
 }
 
+// =========================================================================
+// R_BSP: Render subsector callback
+//
+// Called by the BSP traverser for each subsector that is potentially
+// visible. Iterates over the segs in this subsector and attempts to
+// add each one to the rendered scene.
+// =========================================================================
+
 func r_render_subsector(ssnum) {
     if ssnum < 0 || ssnum >= map_num_subsectors { return }
     const ss = map_subsectors[ssnum]
     const sector = ss["sector"]
     if sector == null { return }
+
+    // Add sprites from this subsector to vissprite list
+    r_add_subsector_sprites(ssnum, sector)
+
+    // Process each seg in this subsector
     let i = 0
     while i < ss["numlines"] {
         const seg_idx = ss["firstline"] + i
@@ -95,73 +286,232 @@ func r_render_subsector(ssnum) {
     }
 }
 
+// =========================================================================
+// R_BSP: Add sprites from a subsector
+//
+// Collects all map objects (things) in the subsector's sector that
+// are potentially visible, projects them to screen space, and adds
+// them as vissprites for deferred rendering.
+// =========================================================================
+
+func r_add_subsector_sprites(ssnum, sector) {
+    for mobj in mobj_list {
+        if mobj["state"] == null { continue }
+        if mobj["health"] <= 0 && (mobj["flags"] & MF_CORPSE) == 0 { continue }
+        if mobj["subsector"] == ssnum || mobj["sector"] == sector {
+            // Transform thing position to viewspace
+            const dx = mobj["x"] - r_viewx
+            const dy = mobj["y"] - r_viewy
+
+            // tz = depth (distance along view axis)
+            const tz = fixed_mul(dx, r_viewcos) + fixed_mul(dy, r_viewsin)
+            if tz <= 4 * FRACUNIT { continue }
+
+            // tx = horizontal displacement from center of view
+            const tx = fixed_mul(dx, r_viewsin) - fixed_mul(dy, r_viewcos)
+
+            // Reject if entirely off-screen horizontally
+            const xscale = fixed_div(r_projection, tz)
+            if abs(tx) > (tz << 2) { continue }
+
+            r_add_vissprite(mobj, tx, tz)
+        }
+    }
+}
+
+// =========================================================================
+// R_SEGS: Add a seg line to the scene
+//
+// This is the core BSP-driven rendering function. For each seg:
+// 1. Transform endpoints to view-relative angles
+// 2. Clip against the field of view
+// 3. Map to screen columns
+// 4. Check against clip segments for occlusion
+// 5. Render the wall columns
+// =========================================================================
+
 func r_add_line(seg) {
     const v1 = seg["v1"]
     const v2 = seg["v2"]
+
+    // R_PointToAngle: compute angles from viewpoint to seg endpoints
     const angle1 = r_point_to_angle(r_viewx, r_viewy, v1["x"], v1["y"]) - r_viewangle
     const angle2 = r_point_to_angle(r_viewx, r_viewy, v2["x"], v2["y"]) - r_viewangle
+
+    // Compute the angular span of this seg
     const span = angle1 - angle2
+
+    // Back-facing check: if span <= 0, the seg faces away from us
     if span <= 0 { return }
+
+    // If the span covers more than 180 degrees, it wraps around --
+    // this means we are behind the seg
     if span >= ANG180 { return }
+
+    // Clip against the field of view using clipangle
     let rw_angle1 = angle1
+
     let tspan = angle1 + clipangle
     if tspan > 2 * clipangle {
         tspan = tspan - 2 * clipangle
+        // If the overshoot exceeds the span, the seg is entirely outside FOV
         if tspan >= span { return }
         rw_angle1 = clipangle
     }
+
     tspan = clipangle - angle2
     if tspan > 2 * clipangle {
         tspan = tspan - 2 * clipangle
         if tspan >= span { return }
     }
+
+    // R_AngleToX: convert view-relative angles to screen columns
     const x1 = r_angle_to_x(rw_angle1 + r_viewangle)
     let x2 = r_angle_to_x(angle2 + r_viewangle)
+
+    // Degenerate seg (zero-width on screen)
     if x1 == x2 { return }
+
+    // x2 is exclusive, convert to inclusive
     x2 = x2 - 1
+
+    // Off-screen rejection
     if x1 >= VIEWWIDTH || x2 < 0 { return }
+
+    // Clamp to screen bounds
     const clipped_x1 = if x1 < 0 { 0 } else { x1 }
     const clipped_x2 = if x2 >= VIEWWIDTH { VIEWWIDTH - 1 } else { x2 }
+
+    // R_ClipSolidWallSegment / R_ClipPassWallSegment:
+    // Check if this range is entirely occluded by existing solid segs
     let all_occluded = true
     let chk = clipped_x1
     while chk <= clipped_x2 {
-        if r_occlusion[chk] == 0 { all_occluded = false; chk = clipped_x2 + 1 }
+        if r_occlusion[chk] == 0 {
+            all_occluded = false
+            chk = clipped_x2 + 1
+        }
         chk = chk + 1
     }
     if all_occluded { return }
+
+    // Determine if this is a solid or pass-through seg
+    const line = seg["linedef"]
+    const backsector = seg["backsector"]
+    let is_solid = false
+
+    if backsector == null {
+        // One-sided line: always solid
+        is_solid = true
+    } else {
+        const frontsector = seg["frontsector"]
+        if frontsector != null {
+            // Closed door check: back ceiling <= front floor
+            if backsector["ceilingheight"] <= frontsector["floorheight"] {
+                is_solid = true
+            }
+            // Closed from below: back floor >= front ceiling
+            if backsector["floorheight"] >= frontsector["ceilingheight"] {
+                is_solid = true
+            }
+            // Same-height window with no texture: not solid
+            if backsector["ceilingheight"] == frontsector["ceilingheight"] &&
+               backsector["floorheight"] == frontsector["floorheight"] {
+                is_solid = false
+            }
+        }
+    }
+
+    // Render the seg columns
     r_draw_seg(seg, clipped_x1, clipped_x2, rw_angle1)
+
+    // Mark occluded columns for solid segs
+    if is_solid {
+        let mx = clipped_x1
+        while mx <= clipped_x2 {
+            r_occlusion[mx] = 1
+            mx = mx + 1
+        }
+    }
 }
+
+// =========================================================================
+// R_MAIN: Angle to screen column mapping
+//
+// Converts a world angle to a screen column index using the tangent
+// projection. This is the inverse of r_xtoviewangle[].
+// =========================================================================
 
 func r_angle_to_x(angle) {
     let a = angle - r_viewangle
+
+    // Normalize to [-ANG180, ANG180]
     while a > ANG180 { a = a - ANG360 }
     while a < -ANG180 { a = a + ANG360 }
+
+    // Clamp to screen edges
     if a > ANG90 { return 0 }
     if a < -ANG90 { return VIEWWIDTH }
+
+    // Tangent projection: x = centerx - tan(angle) * projection
     const t = fine_tangent((ANG90 - a) >> ANGLETOFINESHIFT << ANGLETOFINESHIFT)
     const x = r_centerx - fixed_mul(t, r_projection >> FRACBITS)
+
     if x < 0 { 0 } else if x > VIEWWIDTH { VIEWWIDTH } else { x }
 }
+
+// =========================================================================
+// R_SEGS: Draw a wall segment
+//
+// This is the heart of the renderer (r_segs.c: R_StoreWallRange).
+// For each visible column of a seg:
+// 1. Compute perspective-correct distance and scale
+// 2. Project wall top/bottom to screen rows
+// 3. Handle one-sided walls (middle texture, full occlusion)
+// 4. Handle two-sided walls (upper/lower/middle textures, partial occlusion)
+// 5. Mark floor/ceiling open ranges for visplane rendering
+// 6. Apply diminished lighting based on distance and sector light
+// =========================================================================
 
 func r_draw_seg(seg, x1, x2, rw_angle1) {
     const line = seg["linedef"]
     if line == null { return }
+
     const frontsector = seg["frontsector"]
     const backsector = seg["backsector"]
     if frontsector == null { return }
+
+    const sidedef = seg["sidedef"]
     const v1 = seg["v1"]
+
+    // ---------------------------------------------------------------
+    // R_StoreWallRange: compute perpendicular distance to seg
+    // Uses the dot product of (v1 - viewpos) with the view normal
+    // ---------------------------------------------------------------
     const dx = v1["x"] - r_viewx
     const dy = v1["y"] - r_viewy
     const rw_dist = abs(fixed_mul(dx, r_viewsin) - fixed_mul(dy, r_viewcos))
     if rw_dist <= 0 { return }
+
+    // World-space heights relative to viewz
     const worldfront_floor = frontsector["floorheight"] - r_viewz
     const worldfront_ceiling = frontsector["ceilingheight"] - r_viewz
-    const light = frontsector["lightlevel"]
-    const cmap_idx = colormap_index(light, rw_dist)
-    const cmap = get_colormap(cmap_idx)
-    const toptex = if seg["sidedef"] != null { texture_find_index(seg["sidedef"]["toptexture"]) } else { -1 }
-    const midtex = if seg["sidedef"] != null { texture_find_index(seg["sidedef"]["midtexture"]) } else { -1 }
-    const bottex = if seg["sidedef"] != null { texture_find_index(seg["sidedef"]["bottomtexture"]) } else { -1 }
+
+    // Sector light level + extra light from weapon flash
+    let light = frontsector["lightlevel"] + r_extralight * 16
+    if light > 255 { light = 255 }
+    if light < 0 { light = 0 }
+
+    // ---------------------------------------------------------------
+    // Texture indices for this seg
+    // ---------------------------------------------------------------
+    const toptex = if sidedef != null { texture_find_index(sidedef["toptexture"]) } else { -1 }
+    const midtex = if sidedef != null { texture_find_index(sidedef["midtexture"]) } else { -1 }
+    const bottex = if sidedef != null { texture_find_index(sidedef["bottomtexture"]) } else { -1 }
+
+    // ---------------------------------------------------------------
+    // Back sector heights (for two-sided lines)
+    // ---------------------------------------------------------------
     let has_back = backsector != null
     let worldback_floor = 0
     let worldback_ceiling = 0
@@ -169,96 +519,412 @@ func r_draw_seg(seg, x1, x2, rw_angle1) {
         worldback_floor = backsector["floorheight"] - r_viewz
         worldback_ceiling = backsector["ceilingheight"] - r_viewz
     }
+
+    // ---------------------------------------------------------------
+    // Texture pegging flags
+    // ---------------------------------------------------------------
+    const flags = line["flags"]
+    const dontpegtop = (flags & ML_DONTPEGTOP) != 0
+    const dontpegbottom = (flags & ML_DONTPEGBOTTOM) != 0
+
+    // Side texture offsets
+    const side_texoffset = if sidedef != null { sidedef["textureoffset"] } else { 0 }
+    const side_rowoffset = if sidedef != null { sidedef["rowoffset"] } else { 0 }
+
+    // ---------------------------------------------------------------
+    // Check if front sector is sky
+    // ---------------------------------------------------------------
+    const front_ceiling_sky = frontsector["ceilingpic"] == "F_SKY1"
+    const front_floor_pic = frontsector["floorpic"]
+
+    let back_ceiling_sky = false
+    if has_back {
+        back_ceiling_sky = backsector["ceilingpic"] == "F_SKY1"
+    }
+
+    // ---------------------------------------------------------------
+    // Per-column rendering loop
+    // ---------------------------------------------------------------
     let x = x1
     while x <= x2 {
+        // Skip fully occluded columns
         if r_occlusion[x] != 0 { x = x + 1; continue }
-        const angle = r_xtoviewangle[x]
-        const rw_angle = r_viewangle + angle
-        const dist = fixed_div(r_projection, fine_cosine((rw_angle - r_viewangle) & (ANG360 - 1)))
-        if dist <= 0 { x = x + 1; continue }
-        const scale = fixed_div(r_projection, dist >> 8)
+
+        // ---------------------------------------------------------
+        // Compute perspective distance for this column
+        // R_ScaleFromGlobalAngle equivalent
+        // ---------------------------------------------------------
+        const view_angle_delta = r_xtoviewangle[x]
+        const rw_angle = r_viewangle + view_angle_delta
+
+        // Distance to this column = rw_dist / cos(rw_angle - r_viewangle)
+        const cos_delta = fine_cosine((view_angle_delta) & (ANG360 - 1))
+        let col_dist = 0
+        if cos_delta != 0 {
+            col_dist = fixed_div(rw_dist, cos_delta)
+        } else {
+            col_dist = rw_dist
+        }
+        if col_dist <= 0 { x = x + 1; continue }
+
+        // ---------------------------------------------------------
+        // Scale factor: projection / distance
+        // This converts world units to screen pixels at this depth
+        // ---------------------------------------------------------
+        let scale = fixed_div(r_projection, col_dist >> 8)
+        if scale <= 0 { scale = 64 }
+        if scale > 256 * FRACUNIT { scale = 256 * FRACUNIT }
+
+        // Cache the scale for sprite clipping
+        r_wallscale[x] = scale
+
+        // ---------------------------------------------------------
+        // Compute colormap for diminished lighting
+        // ---------------------------------------------------------
+        const cmap_idx = r_calc_lightmap(light, col_dist)
+        const cmap = get_colormap(cmap_idx)
+
+        // ---------------------------------------------------------
+        // Project front sector ceiling and floor to screen rows
+        // top_y = screen row of ceiling
+        // bot_y = screen row of floor
+        // ---------------------------------------------------------
         const top_y = r_centery - fixed_to_int(fixed_mul(worldfront_ceiling, scale))
         const bot_y = r_centery - fixed_to_int(fixed_mul(worldfront_floor, scale))
+
+        // Current clip bounds for this column
         const ceil_clip = r_ceilingclip[x] + 1
         const floor_clip = r_floorclip[x] - 1
+
+        // ---------------------------------------------------------
+        // ONE-SIDED WALL: solid wall with middle texture
+        // ---------------------------------------------------------
         if !has_back {
+            // Clamp wall drawing range to open clip region
             const wall_top = if top_y < ceil_clip { ceil_clip } else { top_y }
             const wall_bot = if bot_y > floor_clip { floor_clip } else { bot_y }
-            if midtex >= 0 {
+
+            // Draw middle texture (or solid color fallback)
+            if midtex >= 0 && wall_top <= wall_bot {
+                const tex_col = r_calc_texcol(seg, rw_angle, col_dist)
                 const tex = tex_textures[midtex]
-                const tex_col = r_calc_texcol(seg, rw_angle, dist)
-                r_draw_wall_column(x, wall_top, wall_bot, midtex, tex_col, scale, worldfront_ceiling, cmap, line["flags"])
-            } else {
+                const tex_h = tex["height"]
+
+                // Texture Y offset: unpegged = from ceiling, pegged = from floor
+                let tex_y_top = worldfront_ceiling + side_rowoffset
+                if dontpegbottom {
+                    tex_y_top = worldfront_floor + (tex_h << FRACBITS) + side_rowoffset
+                }
+
+                r_draw_wall_column(x, wall_top, wall_bot, midtex, tex_col, scale,
+                                   tex_y_top, tex_h, cmap, flags)
+            } else if wall_top <= wall_bot {
                 r_draw_color_column(x, wall_top, wall_bot, 96, cmap)
             }
-            r_draw_floor_ceiling(x, top_y, bot_y, ceil_clip, floor_clip, frontsector, dist, cmap_idx)
-            r_occlusion[x] = 1
+
+            // Draw ceiling above the wall
+            r_draw_ceiling_plane(x, ceil_clip, top_y - 1, frontsector, col_dist, cmap_idx, front_ceiling_sky)
+
+            // Draw floor below the wall
+            r_draw_floor_plane(x, bot_y + 1, floor_clip, frontsector, col_dist, cmap_idx)
+
+            // Solid wall: fully occlude this column
             r_ceilingclip[x] = VIEWHEIGHT
             r_floorclip[x] = -1
+
+        // ---------------------------------------------------------
+        // TWO-SIDED WALL: upper texture, lower texture, optional mid
+        // ---------------------------------------------------------
         } else {
-            const back_top_y = r_centery - fixed_to_int(fixed_mul(worldback_ceiling, scale))
-            const back_bot_y = r_centery - fixed_to_int(fixed_mul(worldback_floor, scale))
-            if worldback_ceiling < worldfront_ceiling && toptex >= 0 {
+            // Project back sector ceiling and floor
+            let back_top_y = r_centery - fixed_to_int(fixed_mul(worldback_ceiling, scale))
+            let back_bot_y = r_centery - fixed_to_int(fixed_mul(worldback_floor, scale))
+
+            // =====================================================
+            // UPPER WALL: front ceiling higher than back ceiling
+            // =====================================================
+            if worldback_ceiling < worldfront_ceiling {
                 const wall_top = if top_y < ceil_clip { ceil_clip } else { top_y }
-                const wall_bot = if back_top_y > floor_clip { floor_clip } else { back_top_y }
+                let wall_bot = if back_top_y - 1 > floor_clip { floor_clip } else { back_top_y - 1 }
+
                 if wall_top <= wall_bot {
-                    const tex_col = r_calc_texcol(seg, rw_angle, dist)
-                    r_draw_wall_column(x, wall_top, wall_bot, toptex, tex_col, scale, worldfront_ceiling, cmap, line["flags"])
+                    if toptex >= 0 {
+                        const tex_col = r_calc_texcol(seg, rw_angle, col_dist)
+                        const tex = tex_textures[toptex]
+                        const tex_h = tex["height"]
+
+                        // Upper unpegged: draw from top of front ceiling
+                        // Upper pegged: draw from bottom of upper texture
+                        let tex_y_top = worldfront_ceiling + side_rowoffset
+                        if !dontpegtop {
+                            tex_y_top = worldback_ceiling + (tex_h << FRACBITS) + side_rowoffset
+                        }
+
+                        r_draw_wall_column(x, wall_top, wall_bot, toptex, tex_col, scale,
+                                           tex_y_top, tex_h, cmap, flags)
+                    } else if !(front_ceiling_sky && back_ceiling_sky) {
+                        // No texture but height difference: draw solid color
+                        r_draw_color_column(x, wall_top, wall_bot, 96, cmap)
+                    }
                 }
-                if back_top_y > r_ceilingclip[x] { r_ceilingclip[x] = back_top_y }
+
+                // Update ceiling clip: back ceiling becomes the new ceiling
+                if back_top_y > r_ceilingclip[x] + 1 {
+                    r_ceilingclip[x] = back_top_y - 1
+                }
             }
-            if worldback_floor > worldfront_floor && bottex >= 0 {
-                const wall_top = if back_bot_y < ceil_clip { ceil_clip } else { back_bot_y }
+
+            // =====================================================
+            // LOWER WALL: front floor lower than back floor
+            // =====================================================
+            if worldback_floor > worldfront_floor {
+                let wall_top = if back_bot_y + 1 < ceil_clip { ceil_clip } else { back_bot_y + 1 }
                 const wall_bot = if bot_y > floor_clip { floor_clip } else { bot_y }
+
                 if wall_top <= wall_bot {
-                    const tex_col = r_calc_texcol(seg, rw_angle, dist)
-                    r_draw_wall_column(x, wall_top, wall_bot, bottex, tex_col, scale, worldback_floor, cmap, line["flags"])
+                    if bottex >= 0 {
+                        const tex_col = r_calc_texcol(seg, rw_angle, col_dist)
+                        const tex = tex_textures[bottex]
+                        const tex_h = tex["height"]
+
+                        // Lower unpegged: draw from top of front ceiling
+                        // Lower pegged: draw from back floor
+                        let tex_y_top = worldback_floor + side_rowoffset
+                        if dontpegbottom {
+                            tex_y_top = worldfront_ceiling + side_rowoffset
+                        }
+
+                        r_draw_wall_column(x, wall_top, wall_bot, bottex, tex_col, scale,
+                                           tex_y_top, tex_h, cmap, flags)
+                    } else {
+                        r_draw_color_column(x, wall_top, wall_bot, 96, cmap)
+                    }
                 }
-                if back_bot_y < r_floorclip[x] { r_floorclip[x] = back_bot_y }
+
+                // Update floor clip: back floor becomes the new floor
+                if back_bot_y < r_floorclip[x] - 1 {
+                    r_floorclip[x] = back_bot_y + 1
+                }
             }
-            r_draw_floor_ceiling(x, top_y, bot_y, ceil_clip, floor_clip, frontsector, dist, cmap_idx)
-            if worldback_ceiling == worldfront_ceiling && worldback_floor == worldfront_floor {
-                r_occlusion[x] = 0
+
+            // =====================================================
+            // MIDDLE TEXTURE (two-sided): translucent/masked wall
+            // =====================================================
+            if midtex >= 0 {
+                const tex = tex_textures[midtex]
+                const tex_h = tex["height"]
+
+                // Middle texture on two-sided line: clipped to opening
+                let mid_ceil = if worldback_ceiling < worldfront_ceiling {
+                    worldback_ceiling
+                } else {
+                    worldfront_ceiling
+                }
+                let mid_floor = if worldback_floor > worldfront_floor {
+                    worldback_floor
+                } else {
+                    worldfront_floor
+                }
+
+                let mid_top = r_centery - fixed_to_int(fixed_mul(mid_ceil, scale))
+                let mid_bot = r_centery - fixed_to_int(fixed_mul(mid_floor, scale))
+
+                mid_top = if mid_top < ceil_clip { ceil_clip } else { mid_top }
+                mid_bot = if mid_bot > floor_clip { floor_clip } else { mid_bot }
+
+                if mid_top <= mid_bot {
+                    const tex_col = r_calc_texcol(seg, rw_angle, col_dist)
+
+                    // Middle texture pegging: unpegged from ceiling, pegged from floor
+                    let tex_y_top = mid_ceil + side_rowoffset
+                    if dontpegbottom {
+                        tex_y_top = mid_floor + (tex_h << FRACBITS) + side_rowoffset
+                    }
+
+                    r_draw_masked_column(x, mid_top, mid_bot, midtex, tex_col, scale,
+                                         tex_y_top, tex_h, cmap)
+                }
+            }
+
+            // =====================================================
+            // Draw ceiling and floor spans for the open parts
+            // =====================================================
+
+            // Ceiling: from top clip to front ceiling
+            r_draw_ceiling_plane(x, ceil_clip, top_y - 1, frontsector, col_dist, cmap_idx, front_ceiling_sky)
+
+            // Floor: from front floor to bottom clip
+            r_draw_floor_plane(x, bot_y + 1, floor_clip, frontsector, col_dist, cmap_idx)
+
+            // If the opening is zero-height, mark as occluded
+            if worldback_ceiling <= worldfront_floor || worldback_floor >= worldfront_ceiling {
+                r_ceilingclip[x] = VIEWHEIGHT
+                r_floorclip[x] = -1
             }
         }
+
         x = x + 1
     }
 }
+
+// =========================================================================
+// R_SEGS: Calculate texture column for a wall seg
+//
+// Computes which column of the texture to draw for a given screen column.
+// Uses the wall-perpendicular distance and the angle of intersection.
+// =========================================================================
 
 func r_calc_texcol(seg, rw_angle, dist) {
     const offset = seg["offset"]
     const sidedef = seg["sidedef"]
     const texoffset = if sidedef != null { sidedef["textureoffset"] } else { 0 }
-    const angle = rw_angle - seg["angle"]
-    const hyp = fixed_div(dist, fine_cosine(angle >> ANGLETOFINESHIFT << ANGLETOFINESHIFT))
-    const sinv = fine_sine(rw_angle >> ANGLETOFINESHIFT << ANGLETOFINESHIFT)
-    const rw_offset = fixed_mul(hyp, sinv)
+
+    // Compute the horizontal offset along the wall
+    // This uses the hypotenuse distance and sine of the angle difference
+    const angle_diff = rw_angle - seg["angle"]
+    const fine_idx = (angle_diff >> ANGLETOFINESHIFT) & FINEMASK
+    const cos_a = fine_cosine(angle_diff >> ANGLETOFINESHIFT << ANGLETOFINESHIFT)
+
+    let hyp = dist
+    if cos_a != 0 {
+        hyp = fixed_div(dist, cos_a)
+    }
+
+    const sin_a = fine_sine(rw_angle >> ANGLETOFINESHIFT << ANGLETOFINESHIFT)
+    const rw_offset = fixed_mul(hyp, sin_a)
+
     fixed_to_int(offset + texoffset + rw_offset)
 }
 
-func r_draw_wall_column(x, y1, y2, texnum, texcol, scale, world_top, cmap, flags) {
+// =========================================================================
+// R_DRAW: Wall column drawing (r_draw.c: R_DrawColumn)
+//
+// Draws a single vertical column of a wall texture with perspective-
+// correct Y-mapping and colormap-based lighting.
+//
+// Parameters:
+//   x          - screen column
+//   y1, y2     - screen row range (inclusive)
+//   texnum     - texture index into tex_textures[]
+//   texcol     - column within the texture to draw
+//   scale      - wall scale factor at this column (fixed point)
+//   world_top  - world-space height of texture origin (fixed point)
+//   tex_h      - texture height in pixels
+//   cmap       - colormap (256-entry remap table) for lighting
+//   flags      - linedef flags (for future use)
+// =========================================================================
+
+func r_draw_wall_column(x, y1, y2, texnum, texcol, scale, world_top, tex_h, cmap, flags) {
     if y1 > y2 || x < 0 || x >= VIEWWIDTH { return }
+    if tex_h <= 0 { return }
+
+    // Fetch the column pixel data from the texture cache
     const column = texture_get_column(texnum, texcol)
     if column == null { return }
-    const tex_h = len(column)
-    if tex_h == 0 { return }
+
+    const col_h = len(column)
+    if col_h == 0 { return }
+
+    // ---------------------------------------------------------------
+    // Compute texture-space Y mapping
+    //
+    // The reference screen row for the top of the texture is:
+    //   ref_y = centery - (world_top * scale) / FRACUNIT
+    //
+    // For each screen row y, the texture row is:
+    //   tex_y = (y - ref_y) * tex_h / wall_screen_height
+    //
+    // We use a fractional step for accurate sub-pixel mapping.
+    // ---------------------------------------------------------------
+    const ref_y = r_centery - fixed_to_int(fixed_mul(world_top, scale))
+
+    // Inverse scale: how many texture pixels per screen pixel
+    let texstep = 0
+    if scale != 0 {
+        texstep = fixed_div(tex_h << FRACBITS, scale)
+    }
+    if texstep <= 0 { texstep = FRACUNIT }
+
+    // Starting texture coordinate
+    let texfrac = (y1 - ref_y) * texstep
+
     let y = y1
     while y <= y2 {
         if y >= 0 && y < VIEWHEIGHT {
-            const frac_y = ((y - (r_centery - fixed_to_int(fixed_mul(world_top, scale)))) * tex_h) / (y2 - y1 + 1)
-            const ty = ((frac_y % tex_h) + tex_h) % tex_h
+            // Convert fixed-point texture fraction to integer row
+            let ty = fixed_to_int(texfrac)
+
+            // Tile the texture vertically
+            ty = ((ty % col_h) + col_h) % col_h
+
+            // Fetch texel and apply colormap
             let px = column[ty]
-            if cmap != null { px = cmap[px] }
+            if cmap != null && px >= 0 && px < 256 { px = cmap[px] }
+
             r_framebuffer[y * SCREENWIDTH + x] = px
         }
+        texfrac = texfrac + texstep
         y = y + 1
     }
 }
 
+// =========================================================================
+// R_DRAW: Masked (transparent) column drawing
+//
+// Similar to r_draw_wall_column but skips pixels with index 0
+// (transparent in Doom's palette convention for masked textures).
+// Used for two-sided line middle textures and sprite columns.
+// =========================================================================
+
+func r_draw_masked_column(x, y1, y2, texnum, texcol, scale, world_top, tex_h, cmap) {
+    if y1 > y2 || x < 0 || x >= VIEWWIDTH { return }
+    if tex_h <= 0 { return }
+
+    const column = texture_get_column(texnum, texcol)
+    if column == null { return }
+
+    const col_h = len(column)
+    if col_h == 0 { return }
+
+    const ref_y = r_centery - fixed_to_int(fixed_mul(world_top, scale))
+
+    let texstep = 0
+    if scale != 0 {
+        texstep = fixed_div(tex_h << FRACBITS, scale)
+    }
+    if texstep <= 0 { texstep = FRACUNIT }
+
+    let texfrac = (y1 - ref_y) * texstep
+
+    let y = y1
+    while y <= y2 {
+        if y >= 0 && y < VIEWHEIGHT {
+            let ty = fixed_to_int(texfrac)
+            ty = ((ty % col_h) + col_h) % col_h
+
+            let px = column[ty]
+            // Skip transparent pixels (index 0 for masked textures)
+            if px != 0 {
+                if cmap != null && px >= 0 && px < 256 { px = cmap[px] }
+                r_framebuffer[y * SCREENWIDTH + x] = px
+            }
+        }
+        texfrac = texfrac + texstep
+        y = y + 1
+    }
+}
+
+// =========================================================================
+// R_DRAW: Solid color column drawing
+//
+// Fills a column with a single palette index, remapped through the
+// colormap for distance-based lighting.
+// =========================================================================
+
 func r_draw_color_column(x, y1, y2, color, cmap) {
     if y1 > y2 { return }
     let px = color
-    if cmap != null { px = cmap[px] }
+    if cmap != null && px >= 0 && px < 256 { px = cmap[px] }
     let y = y1
     while y <= y2 {
         if y >= 0 && y < VIEWHEIGHT && x >= 0 && x < SCREENWIDTH {
@@ -268,121 +934,671 @@ func r_draw_color_column(x, y1, y2, color, cmap) {
     }
 }
 
+// =========================================================================
+// R_PLANE: Ceiling plane rendering for a single column
+//
+// Renders the ceiling span of a column from the top clip bound to just
+// above the wall. Uses perspective-correct flat texture mapping for
+// non-sky ceilings, and angle-scrolling sky rendering for F_SKY1.
+// =========================================================================
+
+func r_draw_ceiling_plane(x, y1, y2, sector, col_dist, cmap_idx, is_sky) {
+    if y1 > y2 { return }
+    if x < 0 || x >= VIEWWIDTH { return }
+
+    // Clamp to valid screen bounds
+    let cy1 = if y1 < 0 { 0 } else { y1 }
+    let cy2 = if y2 >= VIEWHEIGHT { VIEWHEIGHT - 1 } else { y2 }
+    if cy1 > cy2 { return }
+
+    if is_sky {
+        r_draw_sky_column(x, cy1, cy2)
+    } else {
+        const flat = texture_get_flat(sector["ceilingpic"])
+        if flat != null {
+            r_draw_flat_column(x, cy1, cy2, flat, sector["ceilingheight"], cmap_idx, true)
+        }
+    }
+}
+
+// =========================================================================
+// R_PLANE: Floor plane rendering for a single column
+//
+// Renders the floor span of a column from just below the wall to the
+// bottom clip bound.
+// =========================================================================
+
+func r_draw_floor_plane(x, y1, y2, sector, col_dist, cmap_idx) {
+    if y1 > y2 { return }
+    if x < 0 || x >= VIEWWIDTH { return }
+
+    let fy1 = if y1 < 0 { 0 } else { y1 }
+    let fy2 = if y2 >= VIEWHEIGHT { VIEWHEIGHT - 1 } else { y2 }
+    if fy1 > fy2 { return }
+
+    const flat = texture_get_flat(sector["floorpic"])
+    if flat != null {
+        r_draw_flat_column(x, fy1, fy2, flat, sector["floorheight"], cmap_idx, false)
+    }
+}
+
+// =========================================================================
+// R_PLANE: Combined floor/ceiling rendering (legacy compatibility)
+//
+// Draws both ceiling and floor spans for a column. Called from the
+// simplified one-sided/two-sided wall code path.
+// =========================================================================
+
 func r_draw_floor_ceiling(x, top_y, bot_y, ceil_clip, floor_clip, sector, dist, cmap_idx) {
+    // Ceiling span: from ceiling clip to just above the wall
     const ceil_y1 = ceil_clip
     const ceil_y2 = if top_y - 1 < floor_clip { top_y - 1 } else { floor_clip }
+
     if sector["ceilingpic"] == "F_SKY1" {
         r_draw_sky_column(x, ceil_y1, ceil_y2)
     } else {
         const cflat = texture_get_flat(sector["ceilingpic"])
         if cflat != null && ceil_y1 <= ceil_y2 {
-            r_draw_flat_column(x, ceil_y1, ceil_y2, cflat, sector["ceilingheight"], cmap_idx)
+            r_draw_flat_column(x, ceil_y1, ceil_y2, cflat, sector["ceilingheight"], cmap_idx, true)
         }
     }
+
+    // Floor span: from just below the wall to floor clip
     const floor_y1 = if bot_y + 1 > ceil_clip { bot_y + 1 } else { ceil_clip }
     const floor_y2 = floor_clip
+
     const fflat = texture_get_flat(sector["floorpic"])
     if fflat != null && floor_y1 <= floor_y2 {
-        r_draw_flat_column(x, floor_y1, floor_y2, fflat, sector["floorheight"], cmap_idx)
+        r_draw_flat_column(x, floor_y1, floor_y2, fflat, sector["floorheight"], cmap_idx, false)
     }
 }
 
-func r_draw_flat_column(x, y1, y2, flat, height, cmap_idx) {
-    const cmap = get_colormap(cmap_idx)
+// =========================================================================
+// R_PLANE: Flat (floor/ceiling) texture column rendering
+//
+// Perspective-correct texture mapping for horizontal surfaces (flats).
+// For each screen row, we compute the distance to that row of the flat,
+// then map to the 64x64 flat texture coordinates.
+//
+// From r_plane.c: R_DrawPlanes / R_MakeSpans / R_DrawSpan
+// =========================================================================
+
+func r_draw_flat_column(x, y1, y2, flat, plane_height, base_cmap_idx, is_ceiling) {
+    if y1 > y2 { return }
+    if flat == null { return }
+    if len(flat) < 4096 { return }
+
     let y = y1
     while y <= y2 {
-        if y >= 0 && y < VIEWHEIGHT && y != r_centery {
+        if y >= 0 && y < VIEWHEIGHT {
+            // Distance from the eye to this row of the flat
             const dy = abs(y - r_centery)
-            const z = abs(height - r_viewz)
-            const dist = fixed_div(z, dy << FRACBITS >> 6)
-            const s = r_viewsin >> 10
-            const c = r_viewcos >> 10
-            const mapx = (r_viewx + fixed_mul(dist, c)) >> FRACBITS
-            const mapy = (r_viewy - fixed_mul(dist, s)) >> FRACBITS
-            const tx = ((mapx & 63) + 64) % 64
-            const ty = ((mapy & 63) + 64) % 64
-            let px = flat[ty * 64 + tx]
-            if cmap != null { px = cmap[px] }
+            if dy == 0 { y = y + 1; continue }
+
+            const plane_z = abs(plane_height - r_viewz)
+            if plane_z == 0 { y = y + 1; continue }
+
+            // R_PlaneDistance: distance = plane_height * projection / (y - centery)
+            // This gives the world-space distance to this horizontal line
+            const dist = fixed_div(fixed_mul(plane_z, r_projection >> 6), dy << (FRACBITS - 6))
+            if dist <= 0 { y = y + 1; continue }
+
+            // Diminished lighting: further floors/ceilings are darker
+            let flat_cmap_idx = base_cmap_idx + (fixed_to_int(dist) >> 6)
+            if flat_cmap_idx < 0 { flat_cmap_idx = 0 }
+            if flat_cmap_idx >= NUMCOLORMAPS { flat_cmap_idx = NUMCOLORMAPS - 1 }
+            const cmap = get_colormap(flat_cmap_idx)
+
+            // World-space coordinates of this pixel on the flat
+            // ds_xfrac = viewx + cos(viewangle) * distance
+            // ds_yfrac = viewy - sin(viewangle) * distance
+            const view_angle_delta = r_xtoviewangle[x]
+            const col_angle = r_viewangle + view_angle_delta
+
+            const map_x = r_viewx + fixed_mul(dist, fine_cosine(col_angle & (ANG360 - 1)))
+            const map_y = r_viewy - fixed_mul(dist, fine_sine(col_angle & (ANG360 - 1)))
+
+            // Map to 64x64 flat texture coordinates (flats always tile)
+            const tx = (((map_x >> FRACBITS) & 63) + 64) % 64
+            const ty = (((map_y >> FRACBITS) & 63) + 64) % 64
+
+            // Fetch texel and apply colormap
+            const flat_idx = ty * 64 + tx
+            let px = 0
+            if flat_idx >= 0 && flat_idx < 4096 {
+                px = flat[flat_idx]
+            }
+            if cmap != null && px >= 0 && px < 256 { px = cmap[px] }
+
             r_framebuffer[y * SCREENWIDTH + x] = px
         }
         y = y + 1
     }
 }
 
+// =========================================================================
+// R_PLANE: Sky column rendering
+//
+// The sky in Doom scrolls with the player's viewing angle. The sky texture
+// is drawn as if it were on a giant cylinder around the player. Each
+// screen column samples a different column of the sky texture based on
+// the combined view angle and screen column angle.
+// =========================================================================
+
 let sky_texture = -1
+
 func r_draw_sky_column(x, y1, y2) {
+    // Cache sky texture lookup
     if sky_texture < 0 { sky_texture = texture_find_index("SKY1") }
+    if r_sky_texnum >= 0 { sky_texture = r_sky_texnum }
     if sky_texture < 0 { return }
+
+    if sky_texture >= len(tex_textures) { return }
     const tex = tex_textures[sky_texture]
+    const tex_w = tex["width"]
+    const tex_h = tex["height"]
+    if tex_w <= 0 || tex_h <= 0 { return }
+
+    // Sky column = (viewangle + xtoviewangle[x]) mapped to texture width
+    // The sky scrolls at half speed compared to view rotation in original Doom
     const angle = r_viewangle + r_xtoviewangle[x]
-    const col = fixed_to_int(angle >> ANGLETOFINESHIFT) & (tex["width"] - 1)
-    const column = texture_get_column(sky_texture, col)
+    const sky_col = (fixed_to_int(angle >> ANGLETOFINESHIFT) & (tex_w - 1))
+
+    const column = texture_get_column(sky_texture, sky_col)
     if column == null { return }
-    let y = y1
-    while y <= y2 {
-        if y >= 0 && y < VIEWHEIGHT {
-            const ty = (y * len(column)) / VIEWHEIGHT
-            r_framebuffer[y * SCREENWIDTH + x] = column[((ty % len(column)) + len(column)) % len(column)]
-        }
+    const col_h = len(column)
+    if col_h == 0 { return }
+
+    // Clamp drawing range
+    let draw_y1 = if y1 < 0 { 0 } else { y1 }
+    let draw_y2 = if y2 >= VIEWHEIGHT { VIEWHEIGHT - 1 } else { y2 }
+
+    let y = draw_y1
+    while y <= draw_y2 {
+        // Map screen row to sky texture row
+        // Sky fills the top portion of the screen; map y=[0..VIEWHEIGHT) to [0..texheight)
+        const ty = (y * col_h) / VIEWHEIGHT
+        const clamped_ty = ((ty % col_h) + col_h) % col_h
+
+        // Sky is drawn at full brightness (no colormap)
+        r_framebuffer[y * SCREENWIDTH + x] = column[clamped_ty]
         y = y + 1
     }
 }
 
-func r_draw_vissprites() {
-    for vs in r_vissprites {
-        r_draw_sprite(vs)
+// =========================================================================
+// R_PLANE: Visplane management
+//
+// Visplanes represent contiguous horizontal stretches of floor or ceiling
+// at the same height, texture, and light level. They are created during
+// wall rendering and drawn after all walls are complete.
+// =========================================================================
+
+func r_visplane_alloc(height, picnum, lightlevel, start, stop) {
+    const vp = {
+        "height": height,
+        "picnum": picnum,
+        "lightlevel": lightlevel,
+        "minx": start,
+        "maxx": stop,
+        "top": [],
+        "bottom": []
+    }
+
+    // Initialize top/bottom arrays for all columns
+    let i = 0
+    while i < VIEWWIDTH {
+        vp["top"].push(VIEWHEIGHT)
+        vp["bottom"].push(-1)
+        i = i + 1
+    }
+
+    r_visplanes.push(vp)
+    r_numvisplanes = r_numvisplanes + 1
+    vp
+}
+
+func r_find_visplane(height, picnum, lightlevel, start, stop) {
+    // Search existing visplanes for a match
+    let i = 2  // Skip sentinels at index 0 and 1
+    while i < len(r_visplanes) {
+        const vp = r_visplanes[i]
+        if vp["height"] == height && vp["picnum"] == picnum && vp["lightlevel"] == lightlevel {
+            // Extend range if needed
+            if start < vp["minx"] { vp["minx"] = start }
+            if stop > vp["maxx"] { vp["maxx"] = stop }
+            return vp
+        }
+        i = i + 1
+    }
+
+    // Create a new visplane
+    r_visplane_alloc(height, picnum, lightlevel, start, stop)
+}
+
+// =========================================================================
+// R_PLANE: Draw all visplanes
+//
+// After all walls have been rendered, iterate over all visplanes and
+// render their horizontal spans. Each visplane contains per-column
+// top/bottom bounds that define the visible region.
+// =========================================================================
+
+func r_draw_all_visplanes() {
+    let i = 2  // Skip sentinels
+    while i < len(r_visplanes) {
+        const vp = r_visplanes[i]
+        if vp["minx"] <= vp["maxx"] {
+            r_draw_single_visplane(vp)
+        }
+        i = i + 1
     }
 }
 
+func r_draw_single_visplane(vp) {
+    const height = vp["height"]
+    const picnum = vp["picnum"]
+    const lightlevel = vp["lightlevel"]
+
+    // Determine if this is a sky plane
+    if picnum == "F_SKY1" || picnum == SKYFLATNUM {
+        let x = vp["minx"]
+        while x <= vp["maxx"] {
+            const top = vp["top"][x]
+            const bot = vp["bottom"][x]
+            if top <= bot {
+                r_draw_sky_column(x, top, bot)
+            }
+            x = x + 1
+        }
+        return
+    }
+
+    // Fetch the flat texture
+    const flat = texture_get_flat(picnum)
+    if flat == null { return }
+
+    const cmap_base = colormap_index(lightlevel, 0)
+
+    // Draw each column of the visplane
+    let x = vp["minx"]
+    while x <= vp["maxx"] {
+        const top = vp["top"][x]
+        const bot = vp["bottom"][x]
+        if top <= bot {
+            r_draw_flat_column(x, top, bot, flat, height, cmap_base, true)
+        }
+        x = x + 1
+    }
+}
+
+// =========================================================================
+// R_LIGHT: Diminished lighting calculation
+//
+// Doom uses 32 colormaps, where colormap 0 is full brightness and
+// colormap 31 is nearly black. The index is computed from:
+//   - Base sector light level (0-255)
+//   - Distance from the viewer (diminishing)
+//   - Extra light from weapon flash
+//
+// From r_main.c: R_SetupFrame, r_segs.c: R_StoreWallRange
+// =========================================================================
+
+func r_calc_lightmap(lightlevel, dist) {
+    // Base light level mapped to colormap range [0..31]
+    let level = lightlevel >> 4
+    if level < 0 { level = 0 }
+    if level >= NUMCOLORMAPS { level = NUMCOLORMAPS - 1 }
+
+    // Distance diminishing: further away = darker
+    // The shift factor controls how aggressively light falls off
+    const diminish = fixed_to_int(dist) >> 4
+
+    // Compute final colormap index: brighter sector = lower index
+    let idx = (NUMCOLORMAPS - 1) - level + diminish
+    if idx < 0 { idx = 0 }
+    if idx >= NUMCOLORMAPS { idx = NUMCOLORMAPS - 1 }
+
+    idx
+}
+
+// =========================================================================
+// R_THINGS: Vissprite management
+//
+// During BSP traversal, visible map objects (things) are projected to
+// screen space and stored as vissprites. After all walls are rendered,
+// vissprites are sorted by distance and drawn with column clipping.
+// =========================================================================
+
 func r_add_vissprite(thing, tx, tz) {
     if tz <= 4 * FRACUNIT { return }
+
+    // Projection scale: how many screen pixels per world unit at this depth
     const scale = fixed_div(r_projection, tz)
     const x_screen = r_centerx + fixed_to_int(fixed_mul(tx, scale))
+
+    // World-space height of the thing relative to the viewer
+    const gz = thing["z"] - r_viewz
+    const gzt = gz + thing["height"]
+
+    // Screen Y of thing top and bottom
+    const yt = r_centery - fixed_to_int(fixed_mul(gzt, scale))
+    const yb = r_centery - fixed_to_int(fixed_mul(gz, scale))
+
+    // Sector light level for this thing
+    let sectorlight = thing["sector_light"]
+    if sectorlight == null { sectorlight = 160 }
+
     r_vissprites.push({
         "thing": thing,
         "x": x_screen,
         "scale": scale,
-        "dist": tz
+        "dist": tz,
+        "yt": yt,
+        "yb": yb,
+        "gz": gz,
+        "gzt": gzt,
+        "sectorlight": sectorlight,
+        "mobjflags": thing["flags"]
     })
 }
+
+// =========================================================================
+// R_THINGS: Sort and draw all vissprites
+//
+// Sprites are sorted by distance (furthest first = painter's algorithm)
+// and then drawn with per-column clipping against wall occlusion.
+// =========================================================================
+
+func r_draw_vissprites() {
+    if len(r_vissprites) == 0 { return }
+
+    // Sort vissprites by distance (furthest first)
+    r_sortedsprites = r_sort_vissprites()
+
+    // Draw each sprite
+    for vs in r_sortedsprites {
+        r_draw_sprite(vs)
+    }
+}
+
+// =========================================================================
+// R_THINGS: Vissprite distance sort (insertion sort, like original Doom)
+// =========================================================================
+
+func r_sort_vissprites() {
+    // Copy to sortable array
+    let sorted = []
+    for vs in r_vissprites {
+        sorted.push(vs)
+    }
+
+    // Insertion sort by distance (descending = furthest first)
+    let i = 1
+    while i < len(sorted) {
+        let j = i
+        while j > 0 && sorted[j - 1]["dist"] < sorted[j]["dist"] {
+            const tmp = sorted[j - 1]
+            sorted[j - 1] = sorted[j]
+            sorted[j] = tmp
+            j = j - 1
+        }
+        i = i + 1
+    }
+
+    sorted
+}
+
+// =========================================================================
+// R_THINGS: Draw a single sprite
+//
+// Full sprite rendering pipeline from r_things.c: R_DrawSprite
+// 1. Look up the sprite frame and rotation
+// 2. Get the patch (graphic) for this sprite
+// 3. Project the patch to screen space
+// 4. For each column: clip against wall occlusion, draw with colormap
+// 5. Handle MF_SHADOW (fuzz effect for partial invisibility)
+// =========================================================================
 
 func r_draw_sprite(vs) {
     const thing = vs["thing"]
     if thing == null { return }
+
+    // -----------------------------------------------------------------
+    // R_ProjectSprite: get sprite name from thing state
+    // -----------------------------------------------------------------
     const sprite_name = thing_get_sprite_name(thing)
     if sprite_name == null { return }
-    const lump_idx = if tex_sprite_lumps.has(sprite_name) { tex_sprite_lumps[sprite_name] } else { -1 }
+
+    // Also try rotation-specific lookup
+    let lump_idx = -1
+    if tex_sprite_lumps.has(sprite_name) {
+        lump_idx = tex_sprite_lumps[sprite_name]
+    }
+
+    // Try without rotation suffix (frame "0" = all rotations)
+    if lump_idx < 0 {
+        const base = thing_get_sprite_base(thing)
+        if base != null && tex_sprite_lumps.has(base) {
+            lump_idx = tex_sprite_lumps[base]
+        }
+    }
+
     if lump_idx < 0 { return }
+
+    // -----------------------------------------------------------------
+    // Get the patch data
+    // -----------------------------------------------------------------
     const patch = texture_get_patch(lump_idx)
     if patch == null { return }
+
     const scale = vs["scale"]
-    const x = vs["x"] - fixed_to_int(fixed_mul(patch["leftoffset"] << FRACBITS, scale))
     const dist = vs["dist"]
-    const cmap_idx = colormap_index(thing["sector_light"], dist)
-    const cmap = get_colormap(cmap_idx)
+
+    // Patch dimensions
+    const pw = patch["width"]
+    const ph = patch["height"]
+    const pleftofs = patch["leftoffset"]
+    const ptopofs = patch["topoffset"]
+
+    // -----------------------------------------------------------------
+    // Project patch to screen coordinates
+    // -----------------------------------------------------------------
+    // Horizontal: center at vs["x"], offset by leftoffset
+    const sprite_x1 = vs["x"] - fixed_to_int(fixed_mul(pleftofs << FRACBITS, scale))
+    const sprite_x2 = sprite_x1 + fixed_to_int(fixed_mul(pw << FRACBITS, scale)) - 1
+
+    // Skip if entirely off-screen
+    if sprite_x2 < 0 || sprite_x1 >= VIEWWIDTH { return }
+
+    // Vertical: top is vs["yt"] offset by topoffset projection
+    const sprite_top = r_centery - fixed_to_int(fixed_mul(vs["gzt"], scale))
+
+    // -----------------------------------------------------------------
+    // Compute colormap for this sprite's distance and sector light
+    // -----------------------------------------------------------------
+    let sectorlight = vs["sectorlight"]
+    const mobjflags = vs["mobjflags"]
+    let sprite_cmap_idx = r_calc_lightmap(sectorlight, dist)
+    let sprite_cmap = get_colormap(sprite_cmap_idx)
+
+    // MF_SHADOW: use fuzz effect instead of normal drawing
+    const use_fuzz = (mobjflags & MF_SHADOW) != 0
+
+    // -----------------------------------------------------------------
+    // Column-by-column rendering with wall occlusion clipping
+    // -----------------------------------------------------------------
     let col = 0
-    while col < patch["width"] {
-        const sx = x + fixed_to_int(col * scale)
-        if sx >= 0 && sx < VIEWWIDTH && r_occlusion[sx] == 0 {
-            const top = r_centery - fixed_to_int(fixed_mul((patch["topoffset"] << FRACBITS), scale))
-            let dest_col = []
-            let j = 0
-            while j < VIEWHEIGHT { dest_col.push(-1); j = j + 1 }
-            texture_draw_patch_column(patch, col, dest_col, 0, VIEWHEIGHT, cmap)
-            j = 0
-            while j < VIEWHEIGHT {
-                const sy = top + fixed_to_int(j * scale)
-                if sy >= r_ceilingclip[sx] + 1 && sy <= r_floorclip[sx] - 1 && dest_col[j] >= 0 {
-                    if sy >= 0 && sy < VIEWHEIGHT {
-                        r_framebuffer[sy * SCREENWIDTH + sx] = dest_col[j]
+    while col < pw {
+        // Screen X for this patch column
+        let sx = sprite_x1 + fixed_to_int(fixed_mul(col << FRACBITS, scale))
+
+        if sx >= 0 && sx < VIEWWIDTH {
+            // Check wall occlusion: skip fully occluded columns
+            if r_occlusion[sx] != 0 {
+                col = col + 1
+                continue
+            }
+
+            // Clip to column floor/ceiling bounds (behind walls)
+            const clip_top = r_ceilingclip[sx] + 1
+            const clip_bot = r_floorclip[sx] - 1
+
+            // Get the patch column pixel data using Doom's post-based format
+            const patch_data = patch["data"]
+            if patch_data == null || col >= pw { col = col + 1; continue }
+            if 8 + col * 4 + 3 >= len(patch_data) { col = col + 1; continue }
+
+            const col_ofs = read_i32(patch_data, 8 + col * 4)
+
+            // Process posts in this column
+            let post_ofs = col_ofs
+            while post_ofs < len(patch_data) {
+                const topdelta = patch_data[post_ofs]
+                if topdelta == 255 { break }
+
+                const post_len = patch_data[post_ofs + 1]
+
+                // Compute screen Y range for this post
+                let j = 0
+                while j < post_len {
+                    const patch_y = topdelta + j
+                    const sy = sprite_top + fixed_to_int(fixed_mul(patch_y << FRACBITS, scale))
+
+                    // Clip against wall occlusion bounds
+                    if sy >= clip_top && sy <= clip_bot && sy >= 0 && sy < VIEWHEIGHT {
+                        if use_fuzz {
+                            // MF_SHADOW: fuzz effect (partial invisibility)
+                            r_draw_fuzz_pixel(sx, sy)
+                        } else {
+                            // Normal sprite pixel
+                            let px = patch_data[post_ofs + 3 + j]
+                            if sprite_cmap != null && px >= 0 && px < 256 {
+                                px = sprite_cmap[px]
+                            }
+                            r_framebuffer[sy * SCREENWIDTH + sx] = px
+                        }
                     }
+
+                    j = j + 1
                 }
-                j = j + 1
+
+                post_ofs = post_ofs + post_len + 4
             }
         }
+
         col = col + 1
     }
 }
+
+// =========================================================================
+// R_DRAW: Fuzz effect for MF_SHADOW (partial invisibility)
+//
+// From r_draw.c: R_DrawFuzzColumn
+// The fuzz effect samples neighboring pixels in the framebuffer and
+// applies a dark colormap, creating a shimmering translucent appearance.
+// =========================================================================
+
+func r_draw_fuzz_pixel(x, y) {
+    if x < 0 || x >= VIEWWIDTH || y < 1 || y >= VIEWHEIGHT - 1 { return }
+
+    // Advance fuzz position
+    r_fuzzpos = (r_fuzzpos + 1) % FUZZTABLE
+
+    // Sample the pixel offset by the fuzz table value
+    const fuzz_y = y + fuzzoffset[r_fuzzpos]
+    let sample_y = fuzz_y
+    if sample_y < 0 { sample_y = 0 }
+    if sample_y >= VIEWHEIGHT { sample_y = VIEWHEIGHT - 1 }
+
+    // Get the existing pixel at the fuzz-offset location
+    const existing = r_framebuffer[sample_y * SCREENWIDTH + x]
+
+    // Apply a dark colormap (colormap 6 = quite dark)
+    const dark_cmap = get_colormap(6)
+    let px = existing
+    if dark_cmap != null && px >= 0 && px < 256 {
+        px = dark_cmap[px]
+    }
+
+    r_framebuffer[y * SCREENWIDTH + x] = px
+}
+
+// =========================================================================
+// R_THINGS: Sprite name lookup
+//
+// Computes the sprite lump name from a thing's current state.
+// Format: XXXXFY where XXXX is the 4-char sprite name, F is the frame
+// letter (A=0, B=1, ...), and Y is the rotation (0 = all rotations,
+// 1-8 = specific rotation).
+// =========================================================================
+
+func thing_get_sprite_name(thing) {
+    if thing == null || thing["state"] == null { return null }
+    const state = thing["state"]
+    if state["sprite"] == null { return null }
+
+    const frame = state["frame"] & 31
+    const frame_char = char_at("ABCDEFGHIJKLMNOPQRSTUVWXYZ", frame)
+
+    // Try rotation-based sprite first
+    let rotation = r_sprite_rotation(thing)
+    const rotated_name = state["sprite"] + frame_char + to_string(rotation)
+    if tex_sprite_lumps.has(rotated_name) {
+        return rotated_name
+    }
+
+    // Fall back to rotation 0 (all angles)
+    state["sprite"] + frame_char + "0"
+}
+
+func thing_get_sprite_base(thing) {
+    if thing == null || thing["state"] == null { return null }
+    const state = thing["state"]
+    if state["sprite"] == null { return null }
+
+    const frame = state["frame"] & 31
+    const frame_char = char_at("ABCDEFGHIJKLMNOPQRSTUVWXYZ", frame)
+    state["sprite"] + frame_char + "0"
+}
+
+// =========================================================================
+// R_THINGS: Sprite rotation calculation
+//
+// Determines which rotation frame to use based on the angle between
+// the viewer and the thing. Doom sprites have up to 8 rotations
+// (1-8), where rotation 0 means the sprite looks the same from all
+// angles.
+//
+// From r_things.c: R_ProjectSprite
+// =========================================================================
+
+func r_sprite_rotation(thing) {
+    // Angle from viewer to thing
+    const ang = r_point_to_angle(r_viewx, r_viewy, thing["x"], thing["y"])
+
+    // Thing's facing angle
+    const mobj_angle = thing["angle"]
+
+    // Relative angle: how far around the thing we are from its front
+    const rot_angle = ang - mobj_angle
+
+    // Map to rotation index (1-8)
+    // Each rotation covers 45 degrees (ANG45)
+    // Add half a rotation (ANG45/2) for rounding
+    let rot = ((rot_angle + ANG45 / 2) * 9 / ANG360) & 7
+    if rot < 0 { rot = rot + 8 }
+
+    // Doom rotation indices: 1-8 (1 = facing viewer)
+    rot + 1
+}
+
+// =========================================================================
+// R_MAIN: Framebuffer blit to SDL window
+//
+// Converts the 320x200 palette-indexed framebuffer to RGB and blits
+// it to the SDL window at 3x scale.
+// =========================================================================
 
 func render_blit(window) {
     let y = 0
@@ -399,11 +1615,539 @@ func render_blit(window) {
     }
 }
 
-func thing_get_sprite_name(thing) {
-    if thing == null || thing["state"] == null { return null }
-    const state = thing["state"]
-    if state["sprite"] == null { return null }
-    const frame = state["frame"] & 31
-    const frame_char = char_at("ABCDEFGHIJKLMNOPQRSTUVWXYZ", frame)
-    state["sprite"] + frame_char + "0"
+// =========================================================================
+// R_DRAW: Span drawing for floors/ceilings (horizontal span variant)
+//
+// While Doom's original r_draw.c draws horizontal spans, our
+// implementation uses per-column flat drawing for simplicity.
+// This function provides the horizontal span interface for future
+// optimization.
+// =========================================================================
+
+func r_draw_span(y, x1, x2, flat, ds_xfrac, ds_yfrac, ds_xstep, ds_ystep, cmap) {
+    if y < 0 || y >= VIEWHEIGHT { return }
+    if flat == null { return }
+
+    let xfrac = ds_xfrac
+    let yfrac = ds_yfrac
+
+    let x = x1
+    while x <= x2 {
+        if x >= 0 && x < VIEWWIDTH {
+            // Map to 64x64 flat coordinates
+            const tx = ((xfrac >> FRACBITS) & 63 + 64) % 64
+            const ty = ((yfrac >> FRACBITS) & 63 + 64) % 64
+
+            let px = flat[ty * 64 + tx]
+            if cmap != null && px >= 0 && px < 256 { px = cmap[px] }
+
+            r_framebuffer[y * SCREENWIDTH + x] = px
+        }
+
+        xfrac = xfrac + ds_xstep
+        yfrac = yfrac + ds_ystep
+        x = x + 1
+    }
+}
+
+// =========================================================================
+// R_DRAW: Column drawing with translucency
+//
+// For future use with translucent sprites and effects. Blends the
+// source pixel with the existing framebuffer pixel.
+// =========================================================================
+
+func r_draw_translucent_column(x, y1, y2, column, col_h, cmap, alpha) {
+    if y1 > y2 || x < 0 || x >= VIEWWIDTH { return }
+    if column == null || col_h == 0 { return }
+
+    let y = y1
+    while y <= y2 {
+        if y >= 0 && y < VIEWHEIGHT {
+            const ty = ((y % col_h) + col_h) % col_h
+            let src_px = column[ty]
+            if cmap != null && src_px >= 0 && src_px < 256 { src_px = cmap[src_px] }
+
+            // Simple translucency: blend palette indices
+            // In a true palette engine we would blend RGB values,
+            // but this approximation works for the fuzz-like effect
+            const dst_px = r_framebuffer[y * SCREENWIDTH + x]
+            const blended = (src_px * alpha + dst_px * (255 - alpha)) / 255
+
+            r_framebuffer[y * SCREENWIDTH + x] = blended
+        }
+        y = y + 1
+    }
+}
+
+// =========================================================================
+// R_DRAW: Fuzz column (full column variant)
+//
+// Draws an entire column with the fuzz effect for MF_SHADOW things.
+// From r_draw.c: R_DrawFuzzColumn
+// =========================================================================
+
+func r_draw_fuzz_column(x, y1, y2) {
+    if x < 0 || x >= VIEWWIDTH { return }
+
+    // Clamp to prevent reading outside the framebuffer
+    let fy1 = if y1 < 1 { 1 } else { y1 }
+    let fy2 = if y2 >= VIEWHEIGHT - 1 { VIEWHEIGHT - 2 } else { y2 }
+
+    let y = fy1
+    while y <= fy2 {
+        r_draw_fuzz_pixel(x, y)
+        y = y + 1
+    }
+}
+
+// =========================================================================
+// R_MAIN: Distance and scale utilities
+// =========================================================================
+
+// R_ScaleFromGlobalAngle: compute wall scale from angle and distance
+func r_scale_from_global_angle(visangle, rw_dist, rw_normalangle) {
+    const anglea = ANG90 + visangle - rw_normalangle
+    const angleb = ANG90 + visangle - r_viewangle
+
+    const sinea = fine_sine(anglea >> ANGLETOFINESHIFT << ANGLETOFINESHIFT)
+    const sineb = fine_sine(angleb >> ANGLETOFINESHIFT << ANGLETOFINESHIFT)
+
+    if sineb == 0 { return FRACUNIT }
+
+    let num = fixed_mul(r_projection, sinea)
+    let den = fixed_mul(rw_dist, sineb)
+
+    if den <= 0 { return 256 * FRACUNIT }
+
+    let scale = fixed_div(num, den >> 8)
+    if scale > 256 * FRACUNIT { scale = 256 * FRACUNIT }
+    if scale < 256 { scale = 256 }
+
+    scale
+}
+
+// Compute the perpendicular distance from the viewpoint to a seg
+func r_seg_distance(seg) {
+    const v1 = seg["v1"]
+    const dx = v1["x"] - r_viewx
+    const dy = v1["y"] - r_viewy
+    abs(fixed_mul(dx, r_viewsin) - fixed_mul(dy, r_viewcos))
+}
+
+// =========================================================================
+// R_MAIN: Colormap utility
+//
+// Uses colormap_index from texture.magi for light-to-dark remapping.
+// The r_calc_lightmap function above provides the renderer-specific
+// variant with extra light and distance diminishing support.
+// =========================================================================
+
+// =========================================================================
+// R_MAIN: Light level calculation for wall segments
+//
+// From r_segs.c: uses wall scale to compute light diminishing.
+// Walls closer to the viewer are brighter.
+// =========================================================================
+
+func r_wall_light(base_light, scale) {
+    // Scale-based light index: larger scale = closer = brighter
+    let light_idx = (scale >> (FRACBITS + LIGHTSEGSHIFT))
+    if light_idx < 0 { light_idx = 0 }
+    if light_idx >= MAXLIGHTSCALE { light_idx = MAXLIGHTSCALE - 1 }
+
+    // Map to colormap range
+    let level = base_light >> 4
+    if level < 0 { level = 0 }
+    if level >= LIGHTLEVELS { level = LIGHTLEVELS - 1 }
+
+    let idx = (NUMCOLORMAPS - 1) - level + (MAXLIGHTSCALE - 1 - light_idx) / 2
+    if idx < 0 { idx = 0 }
+    if idx >= NUMCOLORMAPS { idx = NUMCOLORMAPS - 1 }
+
+    idx
+}
+
+// =========================================================================
+// R_MAIN: Light level calculation for floor/ceiling planes
+//
+// From r_plane.c: uses Z distance to compute light diminishing.
+// =========================================================================
+
+func r_plane_light(base_light, dist) {
+    let light_z = dist >> LIGHTZSHIFT
+    if light_z < 0 { light_z = 0 }
+    if light_z >= MAXLIGHTZ { light_z = MAXLIGHTZ - 1 }
+
+    let level = base_light >> 4
+    if level < 0 { level = 0 }
+    if level >= LIGHTLEVELS { level = LIGHTLEVELS - 1 }
+
+    let idx = (NUMCOLORMAPS - 1) - level + (MAXLIGHTZ - 1 - light_z) / 2
+    if idx < 0 { idx = 0 }
+    if idx >= NUMCOLORMAPS { idx = NUMCOLORMAPS - 1 }
+
+    idx
+}
+
+// =========================================================================
+// R_MAIN: Solidsegs / clip segment management
+//
+// The original Doom uses a linked list of solid screen ranges to track
+// which columns have been fully occluded by one-sided walls. Two-sided
+// walls reduce the clip range but don't add to solidsegs.
+//
+// Our simplified implementation uses a per-column occlusion array
+// instead, which is functionally equivalent but simpler.
+// =========================================================================
+
+func r_clip_solid_seg(first, last) {
+    // Mark columns as solid (fully occluded)
+    let x = first
+    while x <= last {
+        if x >= 0 && x < VIEWWIDTH {
+            r_occlusion[x] = 1
+        }
+        x = x + 1
+    }
+}
+
+func r_clip_pass_seg(first, last) {
+    // Pass-through segments don't add to occlusion
+    // (handled by ceiling/floor clip adjustments in r_draw_seg)
+}
+
+func r_check_range(first, last) {
+    // Check if the given range has any open (non-occluded) columns
+    let x = first
+    while x <= last {
+        if x >= 0 && x < VIEWWIDTH && r_occlusion[x] == 0 {
+            return true
+        }
+        x = x + 1
+    }
+    false
+}
+
+// =========================================================================
+// R_MAIN: Point-in-subsector lookup
+// =========================================================================
+
+func r_point_in_subsector(x, y) {
+    map_get_subsector(x, y)
+}
+
+// =========================================================================
+// R_MAIN: View rotation matrix utilities
+// =========================================================================
+
+// Transform a world point to view-relative coordinates
+func r_world_to_view(wx, wy) {
+    const dx = wx - r_viewx
+    const dy = wy - r_viewy
+
+    // Rotate by -viewangle
+    const vx = fixed_mul(dx, r_viewcos) + fixed_mul(dy, r_viewsin)
+    const vy = fixed_mul(dx, r_viewsin) - fixed_mul(dy, r_viewcos)
+
+    {"x": vy, "y": vx}  // x = horizontal, y = depth
+}
+
+// =========================================================================
+// R_MAIN: Weapon sprite rendering
+//
+// Draws the player's weapon sprite overlaid on the 3D view.
+// The weapon sprite is always drawn at full size, centered at the
+// bottom of the screen, using the current weapon's sprite frame.
+// =========================================================================
+
+func r_draw_weapon_sprite() {
+    if player_dead { return }
+
+    // Get weapon sprite name
+    const wp = player_readyweapon
+    const sprite_prefix = r_weapon_sprite_prefix(wp)
+    if sprite_prefix == null { return }
+
+    // Determine frame based on weapon state
+    let frame_char = "A"
+    if weapon_state == "firing" {
+        frame_char = "B"
+    } else if weapon_state == "raising" || weapon_state == "lowering" {
+        frame_char = "A"
+    }
+
+    const lump_name = sprite_prefix + frame_char + "0"
+    let lump_idx = -1
+    if tex_sprite_lumps.has(lump_name) {
+        lump_idx = tex_sprite_lumps[lump_name]
+    }
+    if lump_idx < 0 { return }
+
+    const patch = texture_get_patch(lump_idx)
+    if patch == null { return }
+
+    // Draw weapon patch centered at bottom of screen
+    const wx = (VIEWWIDTH - patch["width"]) / 2
+    let wy = VIEWHEIGHT - patch["height"]
+
+    // Weapon bob during raising/lowering
+    if weapon_state == "raising" {
+        wy = wy + (weapon_tics * 6)
+    } else if weapon_state == "lowering" {
+        wy = wy + ((6 - weapon_tics) * 6)
+    }
+
+    // Flash effect: brightened weapon sprite during firing
+    let weapon_cmap = null
+    if weapon_flash && weapon_flash_tics > 0 {
+        weapon_cmap = get_colormap(0)  // Full brightness
+    }
+
+    // Draw the weapon patch column by column
+    let col = 0
+    while col < patch["width"] {
+        const sx = wx + col
+        if sx >= 0 && sx < VIEWWIDTH {
+            let dest_col = []
+            let j = 0
+            while j < VIEWHEIGHT {
+                dest_col.push(-1)
+                j = j + 1
+            }
+
+            texture_draw_patch_column(patch, col, dest_col, 0, VIEWHEIGHT, weapon_cmap)
+
+            j = 0
+            while j < VIEWHEIGHT {
+                const dy = wy + j
+                if dy >= 0 && dy < VIEWHEIGHT && dest_col[j] >= 0 {
+                    r_framebuffer[dy * SCREENWIDTH + sx] = dest_col[j]
+                }
+                j = j + 1
+            }
+        }
+        col = col + 1
+    }
+}
+
+func r_weapon_sprite_prefix(wp) {
+    match wp {
+        wp_fist => "PUNG",
+        wp_pistol => "PISG",
+        wp_shotgun => "SHTG",
+        wp_chaingun => "CHGG",
+        wp_missile => "MISG",
+        wp_plasma => "PLSG",
+        wp_bfg => "BFGG",
+        wp_chainsaw => "SAWG",
+        wp_supershotgun => "SHT2",
+        _ => null
+    }
+}
+
+// =========================================================================
+// R_MAIN: Screen wipe effect
+//
+// Simple vertical wipe used during level transitions.
+// Each column drops at a different speed to create a "melt" effect.
+// =========================================================================
+
+let r_wipe_active = false
+let r_wipe_progress = []
+let r_wipe_source = []
+
+func r_wipe_start() {
+    r_wipe_active = true
+    r_wipe_progress = []
+    r_wipe_source = []
+
+    // Copy current framebuffer as wipe source
+    let i = 0
+    while i < SCREENWIDTH * SCREENHEIGHT {
+        r_wipe_source.push(r_framebuffer[i])
+        i = i + 1
+    }
+
+    // Initialize per-column wipe offset (randomized start)
+    i = 0
+    while i < SCREENWIDTH {
+        r_wipe_progress.push(-(random_int(16) + 1))
+        i = i + 1
+    }
+}
+
+func r_wipe_tick() {
+    if !r_wipe_active { return false }
+
+    let done = true
+    let x = 0
+    while x < SCREENWIDTH {
+        if r_wipe_progress[x] < 0 {
+            r_wipe_progress[x] = r_wipe_progress[x] + 1
+            done = false
+        } else if r_wipe_progress[x] < SCREENHEIGHT {
+            // Accelerating drop
+            let dy = if r_wipe_progress[x] < 16 { r_wipe_progress[x] + 1 } else { 8 }
+            if r_wipe_progress[x] + dy >= SCREENHEIGHT {
+                dy = SCREENHEIGHT - r_wipe_progress[x]
+            }
+
+            // Copy source pixels above, destination pixels below
+            let y = 0
+            while y < r_wipe_progress[x] && y < SCREENHEIGHT {
+                r_framebuffer[y * SCREENWIDTH + x] = r_wipe_source[(y + SCREENHEIGHT - r_wipe_progress[x]) * SCREENWIDTH + x]
+                y = y + 1
+            }
+
+            r_wipe_progress[x] = r_wipe_progress[x] + dy
+            done = false
+        }
+        x = x + 1
+    }
+
+    if done {
+        r_wipe_active = false
+    }
+
+    !done
+}
+
+// =========================================================================
+// R_MAIN: Gamma correction
+//
+// Doom supports 5 gamma correction levels. Each level remaps the
+// palette to brighten the image.
+// =========================================================================
+
+let r_gamma = 0
+const GAMMA_LEVELS = 5
+
+func r_cycle_gamma() {
+    r_gamma = (r_gamma + 1) % GAMMA_LEVELS
+}
+
+func r_get_gamma_colormap() {
+    // Gamma 0 = normal, 1-4 = progressively brighter
+    // This shifts the colormap selection to use brighter maps
+    r_gamma
+}
+
+// =========================================================================
+// R_MAIN: Framebuffer utilities
+// =========================================================================
+
+// Fill a rectangular region of the framebuffer with a palette index
+func r_fill_rect(x1, y1, x2, y2, color) {
+    let y = y1
+    while y <= y2 {
+        if y >= 0 && y < SCREENHEIGHT {
+            let x = x1
+            while x <= x2 {
+                if x >= 0 && x < SCREENWIDTH {
+                    r_framebuffer[y * SCREENWIDTH + x] = color
+                }
+                x = x + 1
+            }
+        }
+        y = y + 1
+    }
+}
+
+// Draw a flat (64x64 texture) to a rectangular screen region
+func r_draw_flat_to_rect(x1, y1, x2, y2, flat) {
+    if flat == null { return }
+
+    let y = y1
+    while y <= y2 {
+        if y >= 0 && y < SCREENHEIGHT {
+            let x = x1
+            while x <= x2 {
+                if x >= 0 && x < SCREENWIDTH {
+                    const tx = (x & 63)
+                    const ty = (y & 63)
+                    const idx = ty * 64 + tx
+                    if idx >= 0 && idx < 4096 {
+                        r_framebuffer[y * SCREENWIDTH + x] = flat[idx]
+                    }
+                }
+                x = x + 1
+            }
+        }
+        y = y + 1
+    }
+}
+
+// =========================================================================
+// R_MAIN: Debug/diagnostic rendering
+// =========================================================================
+
+// Draw a column of a single color (for debug visualization)
+func r_debug_column(x, y1, y2, color) {
+    if x < 0 || x >= VIEWWIDTH { return }
+    let y = y1
+    while y <= y2 {
+        if y >= 0 && y < VIEWHEIGHT {
+            r_framebuffer[y * SCREENWIDTH + x] = color
+        }
+        y = y + 1
+    }
+}
+
+// Draw a horizontal line (for debug visualization)
+func r_debug_hline(y, x1, x2, color) {
+    if y < 0 || y >= VIEWHEIGHT { return }
+    let x = x1
+    while x <= x2 {
+        if x >= 0 && x < VIEWWIDTH {
+            r_framebuffer[y * SCREENWIDTH + x] = color
+        }
+        x = x + 1
+    }
+}
+
+// =========================================================================
+// R_MAIN: Crosshair rendering
+// =========================================================================
+
+func r_draw_crosshair() {
+    const cx = VIEWWIDTH / 2
+    const cy = VIEWHEIGHT / 2
+    const color = 176  // Bright green
+
+    // Horizontal line
+    if cy >= 0 && cy < VIEWHEIGHT {
+        let x = cx - 3
+        while x <= cx + 3 {
+            if x >= 0 && x < VIEWWIDTH && x != cx {
+                r_framebuffer[cy * SCREENWIDTH + x] = color
+            }
+            x = x + 1
+        }
+    }
+
+    // Vertical line
+    let y = cy - 3
+    while y <= cy + 3 {
+        if y >= 0 && y < VIEWHEIGHT && y != cy {
+            r_framebuffer[y * SCREENWIDTH + cx] = color
+        }
+        y = y + 1
+    }
+}
+
+// =========================================================================
+// R_MAIN: Performance counters
+// =========================================================================
+
+let r_framecount = 0
+let r_visplane_count = 0
+let r_vissprite_count = 0
+let r_seg_count = 0
+
+func r_reset_counters() {
+    r_framecount = r_framecount + 1
+    r_visplane_count = len(r_visplanes)
+    r_vissprite_count = len(r_vissprites)
+    r_seg_count = 0
 }
