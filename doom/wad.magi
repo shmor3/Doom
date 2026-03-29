@@ -176,7 +176,7 @@ func char_code_at(s, i) {
 }
 
 func to_byte(c) {
-    const chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+    const chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}"
     let i = 0
     while i < len(chars) {
         if chars.char_at(i) == c { return 32 + i }

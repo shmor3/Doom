@@ -228,7 +228,7 @@ func teleport_thing(line) {
 }
 
 func door_generic_special(line, special) {
-    // placeholder for remaining ~100 line specials
+    
 }
 
 func doors_run_thinkers() {

@@ -1,0 +1,3640 @@
+const FRACBITS = 16
+const FRACUNIT = 1 << FRACBITS
+const FRACMASK = FRACUNIT - 1
+
+func fixed_mul(a, b) { (a * b) >> FRACBITS }
+func fixed_div(a, b) { if b == 0 { return 0 }; (a << FRACBITS) / b }
+func int_to_fixed(n) { n << FRACBITS }
+func fixed_to_int(f) { f >> FRACBITS }
+func fixed_frac(f) { f & FRACMASK }
+
+const ANG45  = 0x20000000
+const ANG90  = 0x40000000
+const ANG180 = 0x80000000
+const ANG270 = 0xC0000000
+const ANG360 = 0x100000000
+const ANGLETOFINESHIFT = 19
+const FINEANGLES = 8192
+const FINEMASK = FINEANGLES - 1
+const SLOPERANGE = 2048
+const SLOPEBITS = 11
+
+let finesine = []
+let finecosine_offset = 0
+let finetangent = []
+let tantoangle = []
+
+func math_init() {
+    finesine = []
+    finetangent = []
+    tantoangle = []
+    const pi = 3.14159265358979323846
+    let i = 0
+    while i < 10240 {
+        const angle = (i * 2.0 * pi) / 8192.0
+        const s = sin(angle)
+        const val = floor(s * 65536.0 + 0.5)
+        finesine.push(val)
+        i = i + 1
+    }
+    finecosine_offset = 2048
+    i = 0
+    while i < 4096 {
+        const angle = ((i - 1024) * pi) / 2048.0
+        const t = if cos(angle) == 0.0 { 0 } else { sin(angle) / cos(angle) }
+        const val = floor(t * 65536.0 + 0.5)
+        finetangent.push(val)
+        i = i + 1
+    }
+    i = 0
+    while i < 2049 {
+        const f = i * 65536.0 / 2048.0
+        const a = atan(f / 65536.0) * (ANG180 * 1.0) / pi
+        tantoangle.push(floor(a + 0.5))
+        i = i + 1
+    }
+}
+
+func fine_sine(a) {
+    const idx = (a >> ANGLETOFINESHIFT) & FINEMASK
+    if idx < len(finesine) { finesine[idx] } else { 0 }
+}
+
+func fine_cosine(a) {
+    const idx = ((a >> ANGLETOFINESHIFT) + finecosine_offset) & (10240 - 1)
+    if idx < len(finesine) { finesine[idx] } else { 0 }
+}
+
+func fine_tangent(a) {
+    const idx = (a >> ANGLETOFINESHIFT) & 4095
+    if idx < len(finetangent) { finetangent[idx] } else { 0 }
+}
+
+func angle_to_fine(a) { (a >> ANGLETOFINESHIFT) & FINEMASK }
+
+func point_to_angle_2(x1, y1, x2, y2) {
+    const dx = x2 - x1
+    const dy = y2 - y1
+    if dx == 0 && dy == 0 { return 0 }
+    const a = atan2(dy * 1.0, dx * 1.0)
+    const pi = 3.14159265358979323846
+    const bam = floor(a * (ANG180 * 1.0) / pi + 0.5)
+    if bam < 0 { bam + ANG360 } else { bam }
+}
+
+func point_to_dist(x1, y1, x2, y2) {
+    let dx = abs(x2 - x1)
+    let dy = abs(y2 - y1)
+    if dy > dx {
+        const temp = dx
+        dx = dy
+        dy = temp
+    }
+    if dx == 0 { return 0 }
+    const angle = (tantoangle[fixed_div(dy, dx) >> (FRACBITS - SLOPEBITS)] + ANG90) >> ANGLETOFINESHIFT
+    if angle >= 0 && angle < len(finesine) && finesine[angle] != 0 {
+        fixed_div(dx, finesine[angle])
+    } else {
+        dx
+    }
+}
+
+func point_on_side(x, y, nx, ny, ndx, ndy) {
+    if ndx == 0 {
+        if x <= nx { return if ndy > 0 { 1 } else { 0 } }
+        return if ndy < 0 { 1 } else { 0 }
+    }
+    if ndy == 0 {
+        if y <= ny { return if ndx < 0 { 1 } else { 0 } }
+        return if ndx > 0 { 1 } else { 0 }
+    }
+    const dx = (x - nx) >> FRACBITS
+    const dy = (y - ny) >> FRACBITS
+    const left = fixed_to_int(ndy) * dx
+    const right = dy * fixed_to_int(ndx)
+    if right < left { 0 } else { 1 }
+}
+
+func box_on_line_side(tmbox, nx, ny, ndx, ndy) {
+    let p1 = 0
+    let p2 = 0
+    if ndx == 0 {
+        p1 = if tmbox["right"] < nx { -1 } else if tmbox["left"] > nx { 1 } else { 0 }
+        p2 = if tmbox["left"] < nx { -1 } else if tmbox["right"] > nx { 1 } else { 0 }
+        if ndy < 0 { const t = p1; p1 = p2; p2 = t }
+    } else if ndy == 0 {
+        p1 = if tmbox["top"] > ny { 1 } else if tmbox["bottom"] < ny { -1 } else { 0 }
+        p2 = if tmbox["bottom"] > ny { 1 } else if tmbox["top"] < ny { -1 } else { 0 }
+        if ndx < 0 { const t = p1; p1 = p2; p2 = t }
+    } else {
+        p1 = point_on_side(if ndx > 0 { tmbox["left"] } else { tmbox["right"] },
+                           if ndy > 0 { tmbox["top"] } else { tmbox["bottom"] },
+                           nx, ny, ndx, ndy)
+        p2 = point_on_side(if ndx > 0 { tmbox["right"] } else { tmbox["left"] },
+                           if ndy > 0 { tmbox["bottom"] } else { tmbox["top"] },
+                           nx, ny, ndx, ndy)
+    }
+    if p1 == p2 { return p1 }
+    -1
+}
+
+func slope_div(num, den) {
+    if den < 512 { return SLOPERANGE }
+    const ans = (num << 3) / (den >> 8)
+    if ans <= SLOPERANGE { ans } else { SLOPERANGE }
+}
+
+func r_point_to_angle(vx, vy, x, y) {
+    point_to_angle_2(vx, vy, x, y)
+}
+
+func clamp(val, lo, hi) {
+    if val < lo { lo } else if val > hi { hi } else { val }
+}
+
+func lerp(a, b, t) { a + fixed_mul(b - a, t) }
+const SCREENWIDTH = 320
+const SCREENHEIGHT = 200
+const SCREENSCALE = 3
+const WINDOWWIDTH = SCREENWIDTH * SCREENSCALE
+const WINDOWHEIGHT = SCREENHEIGHT * SCREENSCALE
+const VIEWWIDTH = 320
+const VIEWHEIGHT = 168
+const ST_HEIGHT = 32
+const ST_Y = VIEWHEIGHT
+
+const TICRATE = 35
+const MAXPLAYERS = 1
+
+const MF_SPECIAL    = 1
+const MF_SOLID      = 2
+const MF_SHOOTABLE  = 4
+const MF_NOSECTOR   = 8
+const MF_NOBLOCKMAP = 16
+const MF_AMBUSH     = 32
+const MF_JUSTHIT    = 64
+const MF_JUSTATTACKED = 128
+const MF_SPAWNCEILING = 256
+const MF_NOGRAVITY  = 512
+const MF_DROPOFF    = 1024
+const MF_PICKUP     = 2048
+const MF_NOCLIP     = 4096
+const MF_SLIDE      = 8192
+const MF_FLOAT      = 16384
+const MF_TELEPORT   = 32768
+const MF_MISSILE    = 65536
+const MF_DROPPED    = 131072
+const MF_SHADOW     = 262144
+const MF_NOBLOOD    = 524288
+const MF_CORPSE     = 1048576
+const MF_INFLOAT    = 2097152
+const MF_COUNTKILL  = 4194304
+const MF_COUNTITEM  = 8388608
+const MF_SKULLFLY   = 16777216
+const MF_NOTDMATCH  = 33554432
+
+const ML_BLOCKING      = 1
+const ML_BLOCKMONSTERS = 2
+const ML_TWOSIDED      = 4
+const ML_DONTPEGTOP    = 8
+const ML_DONTPEGBOTTOM = 16
+const ML_SECRET        = 32
+const ML_SOUNDBLOCK    = 64
+const ML_DONTDRAW      = 128
+const ML_MAPPED        = 256
+
+const MTF_EASY   = 1
+const MTF_NORMAL = 2
+const MTF_HARD   = 4
+const MTF_AMBUSH = 8
+const MTF_MULTI  = 16
+
+const sk_baby = 0
+const sk_easy = 1
+const sk_medium = 2
+const sk_hard = 3
+const sk_nightmare = 4
+
+const pw_invulnerability = 0
+const pw_strength = 1
+const pw_invisibility = 2
+const pw_ironfeet = 3
+const pw_allmap = 4
+const pw_infrared = 5
+const NUMPOWERS = 6
+
+const am_clip    = 0
+const am_shell   = 1
+const am_cell    = 2
+const am_misl    = 3
+const NUMAMMO    = 4
+const am_noammo  = 4
+
+const wp_fist      = 0
+const wp_pistol    = 1
+const wp_shotgun   = 2
+const wp_chaingun  = 3
+const wp_missile   = 4
+const wp_plasma    = 5
+const wp_bfg       = 6
+const wp_chainsaw  = 7
+const wp_supershotgun = 8
+const NUMWEAPONS   = 9
+
+const it_bluecard    = 0
+const it_yellowcard  = 1
+const it_redcard     = 2
+const it_blueskull   = 3
+const it_yellowskull = 4
+const it_redskull    = 5
+const NUMCARDS       = 6
+
+const MAXHEALTH   = 200
+const MAXARMOR    = 200
+const MAXAMMO_CLIP   = 200
+const MAXAMMO_SHELL  = 50
+const MAXAMMO_CELL   = 300
+const MAXAMMO_MISL   = 50
+
+const MELEERANGE  = 64 * (1 << 16)
+const MISSILERANGE = 32 * 64 * (1 << 16)
+const USERANGE    = 64 * (1 << 16)
+
+const MAXRADIUS = 32 * (1 << 16)
+const GRAVITY   = 1 * (1 << 16)
+const MAXMOVE   = 30 * (1 << 16)
+const STOPSPEED = 4096
+const FRICTION  = 59392
+
+const VIEWHEIGHT_FRAC = 41 * (1 << 16)
+const MAXSTEP   = 24 * (1 << 16)
+
+const FLOATSPEED = 4 * (1 << 16)
+const MAPBLOCKSHIFT = 7 + 16
+const MAPBLOCKSIZE = 128 * (1 << 16)
+const MAPBTOFRAC = MAPBLOCKSHIFT - FRACBITS
+
+const GS_LEVEL       = 0
+const GS_INTERMISSION = 1
+const GS_FINALE      = 2
+const GS_DEMOSCREEN  = 3
+
+const EVT_QUIT    = 256
+const EVT_KEYDOWN = 768
+const EVT_KEYUP   = 769
+
+const SC_ESCAPE = 41
+const SC_RETURN = 40
+const SC_SPACE  = 44
+const SC_TAB    = 43
+const SC_UP     = 82
+const SC_DOWN   = 81
+const SC_LEFT   = 80
+const SC_RIGHT  = 79
+const SC_W      = 26
+const SC_A      = 4
+const SC_S      = 22
+const SC_D      = 7
+const SC_E      = 8
+const SC_LSHIFT = 225
+const SC_LCTRL  = 224
+const SC_1 = 30
+const SC_2 = 31
+const SC_3 = 32
+const SC_4 = 33
+const SC_5 = 34
+const SC_6 = 35
+const SC_7 = 36
+const SC_MINUS = 45
+const SC_EQUALS = 46
+const SC_F1 = 58
+const SC_F2 = 59
+const SC_F3 = 60
+const SC_F4 = 61
+const SC_F5 = 62
+const SC_F6 = 63
+
+const NUMLIGHTS = 32
+const LIGHTLEVELS = 16
+const MAXLIGHTSCALE = 48
+const LIGHTSEGSHIFT = 4
+const MAXLIGHTZ = 128
+const LIGHTZSHIFT = 20
+const LIGHTBRIGHT = 2
+const NUMCOLORMAPS = 32
+let wad_data = []
+let wad_lumps = []
+let wad_numlumps = 0
+
+func wad_open(path) {
+    wad_data = fs_read_bytes(path)
+    if wad_data == null || len(wad_data) < 12 {
+        println(f"ERROR: Cannot read WAD file: {path}")
+        return false
+    }
+    const id = chr(wad_data[0]) + chr(wad_data[1]) + chr(wad_data[2]) + chr(wad_data[3])
+    if id != "IWAD" && id != "PWAD" {
+        println(f"ERROR: Not a WAD file (got {id})")
+        return false
+    }
+    wad_numlumps = read_i32(wad_data, 4)
+    const infotableofs = read_i32(wad_data, 8)
+    wad_lumps = []
+    let i = 0
+    while i < wad_numlumps {
+        const ofs = infotableofs + i * 16
+        const filepos = read_i32(wad_data, ofs)
+        const size = read_i32(wad_data, ofs + 4)
+        let name = ""
+        let j = 0
+        while j < 8 {
+            const c = wad_data[ofs + 8 + j]
+            if c == 0 { j = 8 } else { name = name + chr(c) }
+            j = j + 1
+        }
+        wad_lumps.push({"name": name.upper(), "filepos": filepos, "size": size, "index": i})
+        i = i + 1
+    }
+    println(f"WAD loaded: {id}, {wad_numlumps} lumps")
+    true
+}
+
+func wad_find(name) {
+    const uname = name.upper()
+    let i = wad_numlumps - 1
+    while i >= 0 {
+        if wad_lumps[i]["name"] == uname { return i }
+        i = i - 1
+    }
+    -1
+}
+
+func wad_find_after(name, after) {
+    const uname = name.upper()
+    let i = after + 1
+    while i < wad_numlumps {
+        if wad_lumps[i]["name"] == uname { return i }
+        i = i + 1
+    }
+    -1
+}
+
+func wad_read(index) {
+    if index < 0 || index >= wad_numlumps { return [] }
+    const lump = wad_lumps[index]
+    const start = lump["filepos"]
+    const sz = lump["size"]
+    let result = []
+    let i = 0
+    while i < sz {
+        result.push(wad_data[start + i])
+        i = i + 1
+    }
+    result
+}
+
+func wad_lump_size(index) {
+    if index < 0 || index >= wad_numlumps { return 0 }
+    wad_lumps[index]["size"]
+}
+
+func wad_lump_name(index) {
+    if index < 0 || index >= wad_numlumps { return "" }
+    wad_lumps[index]["name"]
+}
+
+func read_i16(data, offset) {
+    if offset + 1 >= len(data) { return 0 }
+    let val = data[offset] | (data[offset + 1] << 8)
+    if val >= 32768 { val = val - 65536 }
+    val
+}
+
+func read_u16(data, offset) {
+    if offset + 1 >= len(data) { return 0 }
+    data[offset] | (data[offset + 1] << 8)
+}
+
+func read_i32(data, offset) {
+    if offset + 3 >= len(data) { return 0 }
+    let val = data[offset] | (data[offset + 1] << 8) | (data[offset + 2] << 16) | (data[offset + 3] << 24)
+    val
+}
+
+func read_string(data, offset, maxlen) {
+    let s = ""
+    let i = 0
+    while i < maxlen {
+        if offset + i >= len(data) { return s }
+        const c = data[offset + i]
+        if c == 0 { return s }
+        s = s + chr(c)
+        i = i + 1
+    }
+    s
+}
+
+func chr(code) {
+    if code >= 65 && code <= 90 { return char_at("ABCDEFGHIJKLMNOPQRSTUVWXYZ", code - 65) }
+    if code >= 97 && code <= 122 { return char_at("abcdefghijklmnopqrstuvwxyz", code - 97) }
+    if code >= 48 && code <= 57 { return char_at("0123456789", code - 48) }
+    if code == 32 { return " " }
+    if code == 45 { return "-" }
+    if code == 95 { return "_" }
+    if code == 46 { return "." }
+    if code == 47 { return "/" }
+    "?"
+}
+
+func wad_find_map_lump(episode, mission, lumpname) {
+    const mapname = f"E{episode}M{mission}"
+    const map_idx = wad_find(mapname)
+    if map_idx < 0 { return -1 }
+    wad_find_after(lumpname, map_idx)
+}
+
+func wad_find_flat_range() {
+    const f_start = wad_find("F_START")
+    const f_end = wad_find("F_END")
+    if f_start < 0 || f_end < 0 { return {"start": -1, "end": -1} }
+    {"start": f_start, "end": f_end}
+}
+
+func wad_find_sprite_range() {
+    const s_start = wad_find("S_START")
+    const s_end = wad_find("S_END")
+    if s_start < 0 || s_end < 0 { return {"start": -1, "end": -1} }
+    {"start": s_start, "end": s_end}
+}
+
+func wad_find_between(start_name, end_name) {
+    const s = wad_find(start_name)
+    const e = wad_find(end_name)
+    if s < 0 || e < 0 { return [] }
+    let result = []
+    let i = s + 1
+    while i < e {
+        result.push(i)
+        i = i + 1
+    }
+    result
+}
+
+func fs_read_bytes(path) {
+    const raw = fs_read(path)
+    if raw == null { return null }
+    let bytes = []
+    let i = 0
+    while i < len(raw) {
+        bytes.push(char_code_at(raw, i))
+        i = i + 1
+    }
+    bytes
+}
+
+func char_code_at(s, i) {
+    if i >= len(s) { return 0 }
+    const c = s.char_at(i)
+    if c == "" { return 0 }
+    to_byte(c)
+}
+
+func to_byte(c) {
+    const chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}"
+    let i = 0
+    while i < len(chars) {
+        if chars.char_at(i) == c { return 32 + i }
+        i = i + 1
+    }
+    0
+}
+let map_vertexes = []
+let map_linedefs = []
+let map_sidedefs = []
+let map_sectors = []
+let map_segs = []
+let map_subsectors = []
+let map_nodes = []
+let map_things = []
+let map_blockmap = null
+let map_reject = []
+let map_num_sectors = 0
+let map_num_lines = 0
+let map_num_sides = 0
+let map_num_segs = 0
+let map_num_subsectors = 0
+let map_num_nodes = 0
+let map_num_vertexes = 0
+let map_num_things = 0
+
+func map_load(episode, mission) {
+    map_load_vertexes(episode, mission)
+    map_load_sectors(episode, mission)
+    map_load_sidedefs(episode, mission)
+    map_load_linedefs(episode, mission)
+    map_load_segs(episode, mission)
+    map_load_subsectors(episode, mission)
+    map_load_nodes(episode, mission)
+    map_load_things(episode, mission)
+    map_load_blockmap(episode, mission)
+    map_load_reject(episode, mission)
+    println(f"Map E{episode}M{mission}: {map_num_vertexes} verts, {map_num_linedefs} lines, {map_num_sectors} sectors, {map_num_nodes} nodes, {map_num_things} things")
+}
+
+func map_load_vertexes(ep, mi) {
+    const idx = wad_find_map_lump(ep, mi, "VERTEXES")
+    if idx < 0 { println("ERROR: VERTEXES not found"); return }
+    const data = wad_read(idx)
+    map_vertexes = []
+    map_num_vertexes = len(data) / 4
+    let i = 0
+    while i < map_num_vertexes {
+        const ofs = i * 4
+        const x = read_i16(data, ofs) << FRACBITS
+        const y = read_i16(data, ofs + 2) << FRACBITS
+        map_vertexes.push({"x": x, "y": y})
+        i = i + 1
+    }
+}
+
+func map_load_sectors(ep, mi) {
+    const idx = wad_find_map_lump(ep, mi, "SECTORS")
+    if idx < 0 { println("ERROR: SECTORS not found"); return }
+    const data = wad_read(idx)
+    map_sectors = []
+    map_num_sectors = len(data) / 26
+    let i = 0
+    while i < map_num_sectors {
+        const ofs = i * 26
+        map_sectors.push({
+            "floorheight": read_i16(data, ofs) << FRACBITS,
+            "ceilingheight": read_i16(data, ofs + 2) << FRACBITS,
+            "floorpic": read_string(data, ofs + 4, 8).upper(),
+            "ceilingpic": read_string(data, ofs + 12, 8).upper(),
+            "lightlevel": read_i16(data, ofs + 20),
+            "special": read_i16(data, ofs + 22),
+            "tag": read_i16(data, ofs + 24),
+            "soundtraversed": 0,
+            "soundtarget": null,
+            "thinglist": null,
+            "floordata": null,
+            "ceilingdata": null,
+            "validcount": 0,
+            "lines": [],
+            "index": i
+        })
+        i = i + 1
+    }
+}
+
+func map_load_sidedefs(ep, mi) {
+    const idx = wad_find_map_lump(ep, mi, "SIDEDEFS")
+    if idx < 0 { println("ERROR: SIDEDEFS not found"); return }
+    const data = wad_read(idx)
+    map_sidedefs = []
+    map_num_sides = len(data) / 30
+    let i = 0
+    while i < map_num_sides {
+        const ofs = i * 30
+        const sector_idx = read_i16(data, ofs + 28)
+        map_sidedefs.push({
+            "textureoffset": read_i16(data, ofs) << FRACBITS,
+            "rowoffset": read_i16(data, ofs + 2) << FRACBITS,
+            "toptexture": read_string(data, ofs + 4, 8).upper(),
+            "bottomtexture": read_string(data, ofs + 12, 8).upper(),
+            "midtexture": read_string(data, ofs + 20, 8).upper(),
+            "sector": if sector_idx >= 0 && sector_idx < map_num_sectors { map_sectors[sector_idx] } else { null },
+            "sector_idx": sector_idx
+        })
+        i = i + 1
+    }
+}
+
+func map_load_linedefs(ep, mi) {
+    const idx = wad_find_map_lump(ep, mi, "LINEDEFS")
+    if idx < 0 { println("ERROR: LINEDEFS not found"); return }
+    const data = wad_read(idx)
+    map_linedefs = []
+    map_num_linedefs = len(data) / 14
+    let i = 0
+    while i < map_num_linedefs {
+        const ofs = i * 14
+        const v1 = read_u16(data, ofs)
+        const v2 = read_u16(data, ofs + 2)
+        const flags = read_i16(data, ofs + 4)
+        const special = read_i16(data, ofs + 6)
+        const tag = read_i16(data, ofs + 8)
+        const s1 = read_u16(data, ofs + 10)
+        const s2 = read_u16(data, ofs + 12)
+        const vertex1 = if v1 < map_num_vertexes { map_vertexes[v1] } else { {"x": 0, "y": 0} }
+        const vertex2 = if v2 < map_num_vertexes { map_vertexes[v2] } else { {"x": 0, "y": 0} }
+        const dx = vertex2["x"] - vertex1["x"]
+        const dy = vertex2["y"] - vertex1["y"]
+        const front = if s1 < map_num_sides && s1 != 65535 { map_sidedefs[s1] } else { null }
+        const back = if s2 < map_num_sides && s2 != 65535 { map_sidedefs[s2] } else { null }
+        map_linedefs.push({
+            "v1": vertex1, "v2": vertex2,
+            "dx": dx, "dy": dy,
+            "flags": flags, "special": special, "tag": tag,
+            "sidenum": [s1, s2],
+            "frontsector": if front != null { front["sector"] } else { null },
+            "backsector": if back != null { back["sector"] } else { null },
+            "front": front, "back": back,
+            "validcount": 0,
+            "bbox": {
+                "top": if vertex1["y"] > vertex2["y"] { vertex1["y"] } else { vertex2["y"] },
+                "bottom": if vertex1["y"] < vertex2["y"] { vertex1["y"] } else { vertex2["y"] },
+                "left": if vertex1["x"] < vertex2["x"] { vertex1["x"] } else { vertex2["x"] },
+                "right": if vertex1["x"] > vertex2["x"] { vertex1["x"] } else { vertex2["x"] }
+            },
+            "slopetype": if dx == 0 { 0 } else if dy == 0 { 1 } else if (dy > 0) == (dx > 0) { 2 } else { 3 },
+            "index": i
+        })
+        i = i + 1
+    }
+}
+
+func map_load_segs(ep, mi) {
+    const idx = wad_find_map_lump(ep, mi, "SEGS")
+    if idx < 0 { println("ERROR: SEGS not found"); return }
+    const data = wad_read(idx)
+    map_segs = []
+    map_num_segs = len(data) / 12
+    let i = 0
+    while i < map_num_segs {
+        const ofs = i * 12
+        const v1 = read_u16(data, ofs)
+        const v2 = read_u16(data, ofs + 2)
+        const angle = read_i16(data, ofs + 4) << 16
+        const linedef_idx = read_u16(data, ofs + 6)
+        const side = read_i16(data, ofs + 8)
+        const offset = read_i16(data, ofs + 10) << FRACBITS
+        const ld = if linedef_idx < map_num_linedefs { map_linedefs[linedef_idx] } else { null }
+        const sidedef = if ld != null {
+            if side == 0 { ld["front"] } else { ld["back"] }
+        } else { null }
+        const frontsector = if sidedef != null { sidedef["sector"] } else { null }
+        const backsector = if ld != null {
+            if side == 0 { ld["backsector"] } else { ld["frontsector"] }
+        } else { null }
+        map_segs.push({
+            "v1": if v1 < map_num_vertexes { map_vertexes[v1] } else { {"x": 0, "y": 0} },
+            "v2": if v2 < map_num_vertexes { map_vertexes[v2] } else { {"x": 0, "y": 0} },
+            "angle": angle,
+            "linedef": ld,
+            "side": side,
+            "offset": offset,
+            "sidedef": sidedef,
+            "frontsector": frontsector,
+            "backsector": backsector
+        })
+        i = i + 1
+    }
+}
+
+func map_load_subsectors(ep, mi) {
+    const idx = wad_find_map_lump(ep, mi, "SSECTORS")
+    if idx < 0 { println("ERROR: SSECTORS not found"); return }
+    const data = wad_read(idx)
+    map_subsectors = []
+    map_num_subsectors = len(data) / 4
+    let i = 0
+    while i < map_num_subsectors {
+        const ofs = i * 4
+        map_subsectors.push({
+            "numlines": read_u16(data, ofs),
+            "firstline": read_u16(data, ofs + 2),
+            "sector": null
+        })
+        i = i + 1
+    }
+    i = 0
+    while i < map_num_subsectors {
+        const ss = map_subsectors[i]
+        if ss["firstline"] < map_num_segs {
+            const seg = map_segs[ss["firstline"]]
+            ss["sector"] = seg["frontsector"]
+        }
+        i = i + 1
+    }
+}
+
+func map_load_nodes(ep, mi) {
+    const idx = wad_find_map_lump(ep, mi, "NODES")
+    if idx < 0 { println("ERROR: NODES not found"); return }
+    const data = wad_read(idx)
+    map_nodes = []
+    map_num_nodes = len(data) / 28
+    let i = 0
+    while i < map_num_nodes {
+        const ofs = i * 28
+        map_nodes.push({
+            "x": read_i16(data, ofs) << FRACBITS,
+            "y": read_i16(data, ofs + 2) << FRACBITS,
+            "dx": read_i16(data, ofs + 4) << FRACBITS,
+            "dy": read_i16(data, ofs + 6) << FRACBITS,
+            "bbox": [
+                {
+                    "top": read_i16(data, ofs + 8) << FRACBITS,
+                    "bottom": read_i16(data, ofs + 10) << FRACBITS,
+                    "left": read_i16(data, ofs + 12) << FRACBITS,
+                    "right": read_i16(data, ofs + 14) << FRACBITS
+                },
+                {
+                    "top": read_i16(data, ofs + 16) << FRACBITS,
+                    "bottom": read_i16(data, ofs + 18) << FRACBITS,
+                    "left": read_i16(data, ofs + 20) << FRACBITS,
+                    "right": read_i16(data, ofs + 22) << FRACBITS
+                }
+            ],
+            "children": [read_u16(data, ofs + 24), read_u16(data, ofs + 26)]
+        })
+        i = i + 1
+    }
+}
+
+func map_load_things(ep, mi) {
+    const idx = wad_find_map_lump(ep, mi, "THINGS")
+    if idx < 0 { println("ERROR: THINGS not found"); return }
+    const data = wad_read(idx)
+    map_things = []
+    map_num_things = len(data) / 10
+    let i = 0
+    while i < map_num_things {
+        const ofs = i * 10
+        map_things.push({
+            "x": read_i16(data, ofs) << FRACBITS,
+            "y": read_i16(data, ofs + 2) << FRACBITS,
+            "angle": read_i16(data, ofs + 4),
+            "type": read_u16(data, ofs + 6),
+            "options": read_i16(data, ofs + 8)
+        })
+        i = i + 1
+    }
+}
+
+func map_load_blockmap(ep, mi) {
+    const idx = wad_find_map_lump(ep, mi, "BLOCKMAP")
+    if idx < 0 { map_blockmap = null; return }
+    const data = wad_read(idx)
+    if len(data) < 8 { map_blockmap = null; return }
+    map_blockmap = {
+        "originx": read_i16(data, 0) << FRACBITS,
+        "originy": read_i16(data, 2) << FRACBITS,
+        "width": read_i16(data, 4),
+        "height": read_i16(data, 6),
+        "data": data
+    }
+}
+
+func map_load_reject(ep, mi) {
+    const idx = wad_find_map_lump(ep, mi, "REJECT")
+    if idx < 0 { map_reject = []; return }
+    map_reject = wad_read(idx)
+}
+
+func map_check_reject(s1, s2) {
+    if len(map_reject) == 0 { return false }
+    const bit = s1 * map_num_sectors + s2
+    const byte_idx = bit / 8
+    const bit_idx = bit & 7
+    if byte_idx >= len(map_reject) { return false }
+    (map_reject[byte_idx] & (1 << bit_idx)) != 0
+}
+
+func map_get_subsector(x, y) {
+    let node_idx = map_num_nodes - 1
+    while node_idx < 32768 {
+        const node = map_nodes[node_idx]
+        const side = point_on_side(x, y, node["x"], node["y"], node["dx"], node["dy"])
+        node_idx = node["children"][side]
+    }
+    node_idx & 32767
+}
+let tex_palette = []
+let tex_colormaps = []
+let tex_textures = []
+let tex_flats = {}
+let tex_patches = {}
+let tex_pnames = []
+let tex_texture_cache = {}
+let tex_flat_cache = {}
+let tex_sprite_lumps = {}
+
+func texture_init() {
+    texture_load_palette()
+    texture_load_colormaps()
+    texture_load_pnames()
+    texture_load_textures()
+    texture_index_flats()
+    texture_index_sprites()
+}
+
+func texture_load_palette() {
+    const idx = wad_find("PLAYPAL")
+    if idx < 0 { println("ERROR: PLAYPAL not found"); return }
+    const data = wad_read(idx)
+    tex_palette = []
+    let i = 0
+    while i < 256 {
+        const ofs = i * 3
+        tex_palette.push({"r": data[ofs], "g": data[ofs + 1], "b": data[ofs + 2]})
+        i = i + 1
+    }
+}
+
+func texture_load_colormaps() {
+    const idx = wad_find("COLORMAP")
+    if idx < 0 { println("ERROR: COLORMAP not found"); return }
+    const data = wad_read(idx)
+    tex_colormaps = []
+    let m = 0
+    while m < 34 {
+        let cmap = []
+        let i = 0
+        while i < 256 {
+            cmap.push(data[m * 256 + i])
+            i = i + 1
+        }
+        tex_colormaps.push(cmap)
+        m = m + 1
+    }
+}
+
+func texture_load_pnames() {
+    const idx = wad_find("PNAMES")
+    if idx < 0 { println("ERROR: PNAMES not found"); return }
+    const data = wad_read(idx)
+    const count = read_i32(data, 0)
+    tex_pnames = []
+    let i = 0
+    while i < count {
+        tex_pnames.push(read_string(data, 4 + i * 8, 8).upper())
+        i = i + 1
+    }
+}
+
+func texture_load_textures() {
+    tex_textures = []
+    const lump_names = ["TEXTURE1", "TEXTURE2"]
+    for lname in lump_names {
+        const idx = wad_find(lname)
+        if idx < 0 { continue }
+        const data = wad_read(idx)
+        const numtextures = read_i32(data, 0)
+        let i = 0
+        while i < numtextures {
+            const offset = read_i32(data, 4 + i * 4)
+            const name = read_string(data, offset, 8).upper()
+            const width = read_u16(data, offset + 12)
+            const height = read_u16(data, offset + 14)
+            const patchcount = read_u16(data, offset + 20)
+            let patches = []
+            let p = 0
+            while p < patchcount {
+                const pofs = offset + 22 + p * 10
+                patches.push({
+                    "originx": read_i16(data, pofs),
+                    "originy": read_i16(data, pofs + 2),
+                    "patch": read_u16(data, pofs + 4)
+                })
+                p = p + 1
+            }
+            tex_textures.push({
+                "name": name,
+                "width": width,
+                "height": height,
+                "patches": patches
+            })
+            i = i + 1
+        }
+    }
+    println(f"Loaded {len(tex_textures)} textures")
+}
+
+func texture_index_flats() {
+    const range = wad_find_flat_range()
+    if range["start"] < 0 { return }
+    let i = range["start"] + 1
+    while i < range["end"] {
+        const name = wad_lump_name(i)
+        if wad_lump_size(i) == 4096 {
+            tex_flats[name] = i
+        }
+        i = i + 1
+    }
+    println(f"Indexed {len(tex_flats)} flats")
+}
+
+func texture_index_sprites() {
+    const range = wad_find_sprite_range()
+    if range["start"] < 0 { return }
+    let i = range["start"] + 1
+    while i < range["end"] {
+        const name = wad_lump_name(i)
+        tex_sprite_lumps[name] = i
+        i = i + 1
+    }
+    println(f"Indexed {len(tex_sprite_lumps)} sprite lumps")
+}
+
+func texture_find(name) {
+    const uname = name.upper()
+    if uname == "-" || uname == "" { return null }
+    let i = 0
+    while i < len(tex_textures) {
+        if tex_textures[i]["name"] == uname { return tex_textures[i] }
+        i = i + 1
+    }
+    null
+}
+
+func texture_find_index(name) {
+    const uname = name.upper()
+    if uname == "-" || uname == "" { return -1 }
+    let i = 0
+    while i < len(tex_textures) {
+        if tex_textures[i]["name"] == uname { return i }
+        i = i + 1
+    }
+    -1
+}
+
+func texture_get_column(texnum, col) {
+    if texnum < 0 || texnum >= len(tex_textures) { return null }
+    const tex = tex_textures[texnum]
+    const w = tex["width"]
+    const h = tex["height"]
+    const actual_col = ((col % w) + w) % w
+    const cache_key = f"{texnum}_{actual_col}"
+    if tex_texture_cache.has(cache_key) { return tex_texture_cache[cache_key] }
+    let column = []
+    let i = 0
+    while i < h { column.push(0); i = i + 1 }
+    for pdef in tex["patches"] {
+        const pname_idx = pdef["patch"]
+        if pname_idx >= len(tex_pnames) { continue }
+        const pname = tex_pnames[pname_idx]
+        const lump_idx = wad_find(pname)
+        if lump_idx < 0 { continue }
+        const pcol = actual_col - pdef["originx"]
+        if pcol < 0 { continue }
+        const patch_data = wad_read(lump_idx)
+        const patch_width = read_u16(patch_data, 0)
+        if pcol >= patch_width { continue }
+        const col_ofs = read_i32(patch_data, 8 + pcol * 4)
+        let post_ofs = col_ofs
+        while post_ofs < len(patch_data) {
+            const topdelta = patch_data[post_ofs]
+            if topdelta == 255 { break }
+            const post_len = patch_data[post_ofs + 1]
+            let j = 0
+            while j < post_len {
+                const dest_y = topdelta + pdef["originy"] + j
+                if dest_y >= 0 && dest_y < h {
+                    column[dest_y] = patch_data[post_ofs + 3 + j]
+                }
+                j = j + 1
+            }
+            post_ofs = post_ofs + post_len + 4
+        }
+    }
+    tex_texture_cache[cache_key] = column
+    column
+}
+
+func texture_get_flat(name) {
+    const uname = name.upper()
+    if tex_flat_cache.has(uname) { return tex_flat_cache[uname] }
+    if !tex_flats.has(uname) { return null }
+    const lump_idx = tex_flats[uname]
+    const data = wad_read(lump_idx)
+    if len(data) != 4096 { return null }
+    tex_flat_cache[uname] = data
+    data
+}
+
+func texture_get_patch(lump_idx) {
+    if lump_idx < 0 { return null }
+    const data = wad_read(lump_idx)
+    if len(data) < 8 { return null }
+    {
+        "width": read_u16(data, 0),
+        "height": read_u16(data, 2),
+        "leftoffset": read_i16(data, 4),
+        "topoffset": read_i16(data, 6),
+        "data": data
+    }
+}
+
+func texture_draw_patch_column(patch, col, dest, dest_ofs, dest_h, colormap) {
+    if patch == null { return }
+    const data = patch["data"]
+    const w = patch["width"]
+    if col < 0 || col >= w { return }
+    const col_ofs = read_i32(data, 8 + col * 4)
+    let post_ofs = col_ofs
+    while post_ofs < len(data) {
+        const topdelta = data[post_ofs]
+        if topdelta == 255 { return }
+        const length = data[post_ofs + 1]
+        let j = 0
+        while j < length {
+            const y = topdelta + j
+            if y >= 0 && y < dest_h {
+                let px = data[post_ofs + 3 + j]
+                if colormap != null && px < 256 { px = colormap[px] }
+                dest[dest_ofs + y] = px
+            }
+            j = j + 1
+        }
+        post_ofs = post_ofs + length + 4
+    }
+}
+
+func palette_rgb(index) {
+    if index < 0 || index >= 256 { return {"r": 0, "g": 0, "b": 0} }
+    tex_palette[index]
+}
+
+func colormap_index(lightlevel, dist) {
+    let level = lightlevel >> 4
+    if level < 0 { level = 0 }
+    if level >= NUMCOLORMAPS { level = NUMCOLORMAPS - 1 }
+    const diminish = fixed_to_int(dist) >> 4
+    let idx = (NUMCOLORMAPS - 1) - level + diminish
+    if idx < 0 { idx = 0 }
+    if idx >= NUMCOLORMAPS { idx = NUMCOLORMAPS - 1 }
+    idx
+}
+
+func get_colormap(idx) {
+    if idx < 0 { idx = 0 }
+    if idx >= len(tex_colormaps) { idx = len(tex_colormaps) - 1 }
+    tex_colormaps[idx]
+}
+let bsp_validcount = 0
+
+func bsp_new_validcount() {
+    bsp_validcount = bsp_validcount + 1
+}
+
+func r_render_bsp_node(node_idx, render_subsector_fn) {
+    if node_idx >= 32768 {
+        render_subsector_fn(node_idx & 32767)
+        return
+    }
+    if node_idx < 0 || node_idx >= map_num_nodes { return }
+    const node = map_nodes[node_idx]
+    const side = point_on_side(player_x, player_y, node["x"], node["y"], node["dx"], node["dy"])
+    r_render_bsp_node(node["children"][side], render_subsector_fn)
+    const other = if side == 0 { 1 } else { 0 }
+    if r_check_bbox(node["bbox"][other]) {
+        r_render_bsp_node(node["children"][other], render_subsector_fn)
+    }
+}
+
+func r_check_bbox(bbox) {
+    const boxx = if player_x <= bbox["left"] { 0 }
+                 else if player_x < bbox["right"] { 1 }
+                 else { 2 }
+    const boxy = if player_y >= bbox["top"] { 0 }
+                 else if player_y > bbox["bottom"] { 1 }
+                 else { 2 }
+    const boxpos = boxy * 3 + boxx
+    if boxpos == 4 { return true }
+    const checkcoord = [
+        [3, 0, 2, 1], [3, 0, 2, 0], [3, 1, 2, 0],
+        [3, 0, 3, 1], [-1,-1,-1,-1], [2, 0, 2, 1],
+        [3, 0, 3, 0], [2, 0, 3, 1], [2, 0, 3, 0]
+    ]
+    const cc = checkcoord[boxpos]
+    if cc[0] == -1 { return true }
+    const x1 = if cc[0] == 2 { bbox["left"] } else { bbox["right"] }
+    const y1 = if cc[1] == 0 { bbox["top"] } else { bbox["bottom"] }
+    const x2 = if cc[2] == 2 { bbox["left"] } else { bbox["right"] }
+    const y2 = if cc[3] == 0 { bbox["top"] } else { bbox["bottom"] }
+    const angle1 = r_point_to_angle(player_x, player_y, x1, y1) - player_angle
+    const angle2 = r_point_to_angle(player_x, player_y, x2, y2) - player_angle
+    const span = angle1 - angle2
+    if span >= ANG180 { return true }
+    let tspan = angle1 + clipangle
+    if tspan > 2 * clipangle {
+        tspan = tspan - 2 * clipangle
+        if tspan >= span { return false }
+    }
+    tspan = clipangle - angle2
+    if tspan > 2 * clipangle {
+        tspan = tspan - 2 * clipangle
+        if tspan >= span { return false }
+    }
+    true
+}
+
+let clipangle = ANG90
+
+func bsp_init() {
+    clipangle = point_to_angle_2(0, 0, VIEWWIDTH << FRACBITS, (VIEWWIDTH / 2) << FRACBITS)
+}
+let r_framebuffer = []
+let r_occlusion = []
+let r_floorclip = []
+let r_ceilingclip = []
+let r_viewangle = 0
+let r_viewx = 0
+let r_viewy = 0
+let r_viewz = 0
+let r_viewsin = 0
+let r_viewcos = 0
+let r_centerx = 0
+let r_centery = 0
+let r_projection = 0
+let r_vissprites = []
+let r_visplanes = []
+let r_screenheightarray = []
+let r_xtoviewangle = []
+
+func render_init() {
+    r_framebuffer = []
+    let i = 0
+    while i < SCREENWIDTH * SCREENHEIGHT {
+        r_framebuffer.push(0)
+        i = i + 1
+    }
+    r_occlusion = []
+    r_floorclip = []
+    r_ceilingclip = []
+    r_screenheightarray = []
+    i = 0
+    while i < SCREENWIDTH {
+        r_occlusion.push(0)
+        r_floorclip.push(VIEWHEIGHT)
+        r_ceilingclip.push(-1)
+        r_screenheightarray.push(0)
+        i = i + 1
+    }
+    r_centerx = VIEWWIDTH / 2
+    r_centery = VIEWHEIGHT / 2
+    r_projection = r_centerx << FRACBITS
+    r_xtoviewangle = []
+    i = 0
+    while i < VIEWWIDTH + 1 {
+        const f = atan((i - r_centerx + 0.5) / (r_centerx * 1.0))
+        const pi = 3.14159265358979323846
+        const a = floor(-f * (ANG180 * 1.0) / pi + 0.5)
+        r_xtoviewangle.push(a)
+        i = i + 1
+    }
+    bsp_init()
+}
+
+func render_player_view() {
+    r_viewx = player_x
+    r_viewy = player_y
+    r_viewz = player_viewz
+    r_viewangle = player_angle
+    r_viewsin = fine_sine(r_viewangle)
+    r_viewcos = fine_cosine(r_viewangle)
+    r_vissprites = []
+    r_visplanes = []
+    let i = 0
+    while i < SCREENWIDTH {
+        r_occlusion[i] = 0
+        r_floorclip[i] = VIEWHEIGHT
+        r_ceilingclip[i] = -1
+        i = i + 1
+    }
+    render_clear_fb()
+    bsp_new_validcount()
+    r_render_bsp_node(map_num_nodes - 1, r_render_subsector)
+    r_draw_vissprites()
+}
+
+func render_clear_fb() {
+    let i = 0
+    while i < SCREENWIDTH * SCREENHEIGHT {
+        r_framebuffer[i] = 0
+        i = i + 1
+    }
+}
+
+func r_render_subsector(ssnum) {
+    if ssnum < 0 || ssnum >= map_num_subsectors { return }
+    const ss = map_subsectors[ssnum]
+    const sector = ss["sector"]
+    if sector == null { return }
+    let i = 0
+    while i < ss["numlines"] {
+        const seg_idx = ss["firstline"] + i
+        if seg_idx < map_num_segs {
+            r_add_line(map_segs[seg_idx])
+        }
+        i = i + 1
+    }
+}
+
+func r_add_line(seg) {
+    const v1 = seg["v1"]
+    const v2 = seg["v2"]
+    const angle1 = r_point_to_angle(r_viewx, r_viewy, v1["x"], v1["y"]) - r_viewangle
+    const angle2 = r_point_to_angle(r_viewx, r_viewy, v2["x"], v2["y"]) - r_viewangle
+    const span = angle1 - angle2
+    if span <= 0 { return }
+    if span >= ANG180 { return }
+    let rw_angle1 = angle1
+    let tspan = angle1 + clipangle
+    if tspan > 2 * clipangle {
+        tspan = tspan - 2 * clipangle
+        if tspan >= span { return }
+        rw_angle1 = clipangle
+    }
+    tspan = clipangle - angle2
+    if tspan > 2 * clipangle {
+        tspan = tspan - 2 * clipangle
+        if tspan >= span { return }
+    }
+    const x1 = r_angle_to_x(rw_angle1 + r_viewangle)
+    let x2 = r_angle_to_x(angle2 + r_viewangle)
+    if x1 == x2 { return }
+    x2 = x2 - 1
+    if x1 >= VIEWWIDTH || x2 < 0 { return }
+    const clipped_x1 = if x1 < 0 { 0 } else { x1 }
+    const clipped_x2 = if x2 >= VIEWWIDTH { VIEWWIDTH - 1 } else { x2 }
+    let all_occluded = true
+    let chk = clipped_x1
+    while chk <= clipped_x2 {
+        if r_occlusion[chk] == 0 { all_occluded = false; chk = clipped_x2 + 1 }
+        chk = chk + 1
+    }
+    if all_occluded { return }
+    r_draw_seg(seg, clipped_x1, clipped_x2, rw_angle1)
+}
+
+func r_angle_to_x(angle) {
+    let a = angle - r_viewangle
+    while a > ANG180 { a = a - ANG360 }
+    while a < -ANG180 { a = a + ANG360 }
+    if a > ANG90 { return 0 }
+    if a < -ANG90 { return VIEWWIDTH }
+    const t = fine_tangent((ANG90 - a) >> ANGLETOFINESHIFT << ANGLETOFINESHIFT)
+    const x = r_centerx - fixed_mul(t, r_projection >> FRACBITS)
+    if x < 0 { 0 } else if x > VIEWWIDTH { VIEWWIDTH } else { x }
+}
+
+func r_draw_seg(seg, x1, x2, rw_angle1) {
+    const line = seg["linedef"]
+    if line == null { return }
+    const frontsector = seg["frontsector"]
+    const backsector = seg["backsector"]
+    if frontsector == null { return }
+    const v1 = seg["v1"]
+    const dx = v1["x"] - r_viewx
+    const dy = v1["y"] - r_viewy
+    const rw_dist = abs(fixed_mul(dx, r_viewsin) - fixed_mul(dy, r_viewcos))
+    if rw_dist <= 0 { return }
+    const worldfront_floor = frontsector["floorheight"] - r_viewz
+    const worldfront_ceiling = frontsector["ceilingheight"] - r_viewz
+    const light = frontsector["lightlevel"]
+    const cmap_idx = colormap_index(light, rw_dist)
+    const cmap = get_colormap(cmap_idx)
+    const toptex = if seg["sidedef"] != null { texture_find_index(seg["sidedef"]["toptexture"]) } else { -1 }
+    const midtex = if seg["sidedef"] != null { texture_find_index(seg["sidedef"]["midtexture"]) } else { -1 }
+    const bottex = if seg["sidedef"] != null { texture_find_index(seg["sidedef"]["bottomtexture"]) } else { -1 }
+    let has_back = backsector != null
+    let worldback_floor = 0
+    let worldback_ceiling = 0
+    if has_back {
+        worldback_floor = backsector["floorheight"] - r_viewz
+        worldback_ceiling = backsector["ceilingheight"] - r_viewz
+    }
+    let x = x1
+    while x <= x2 {
+        if r_occlusion[x] != 0 { x = x + 1; continue }
+        const angle = r_xtoviewangle[x]
+        const rw_angle = r_viewangle + angle
+        const dist = fixed_div(r_projection, fine_cosine((rw_angle - r_viewangle) & (ANG360 - 1)))
+        if dist <= 0 { x = x + 1; continue }
+        const scale = fixed_div(r_projection, dist >> 8)
+        const top_y = r_centery - fixed_to_int(fixed_mul(worldfront_ceiling, scale))
+        const bot_y = r_centery - fixed_to_int(fixed_mul(worldfront_floor, scale))
+        const ceil_clip = r_ceilingclip[x] + 1
+        const floor_clip = r_floorclip[x] - 1
+        if !has_back {
+            const wall_top = if top_y < ceil_clip { ceil_clip } else { top_y }
+            const wall_bot = if bot_y > floor_clip { floor_clip } else { bot_y }
+            if midtex >= 0 {
+                const tex = tex_textures[midtex]
+                const tex_col = r_calc_texcol(seg, rw_angle, dist)
+                r_draw_wall_column(x, wall_top, wall_bot, midtex, tex_col, scale, worldfront_ceiling, cmap, line["flags"])
+            } else {
+                r_draw_color_column(x, wall_top, wall_bot, 96, cmap)
+            }
+            r_draw_floor_ceiling(x, top_y, bot_y, ceil_clip, floor_clip, frontsector, dist, cmap_idx)
+            r_occlusion[x] = 1
+            r_ceilingclip[x] = VIEWHEIGHT
+            r_floorclip[x] = -1
+        } else {
+            const back_top_y = r_centery - fixed_to_int(fixed_mul(worldback_ceiling, scale))
+            const back_bot_y = r_centery - fixed_to_int(fixed_mul(worldback_floor, scale))
+            if worldback_ceiling < worldfront_ceiling && toptex >= 0 {
+                const wall_top = if top_y < ceil_clip { ceil_clip } else { top_y }
+                const wall_bot = if back_top_y > floor_clip { floor_clip } else { back_top_y }
+                if wall_top <= wall_bot {
+                    const tex_col = r_calc_texcol(seg, rw_angle, dist)
+                    r_draw_wall_column(x, wall_top, wall_bot, toptex, tex_col, scale, worldfront_ceiling, cmap, line["flags"])
+                }
+                if back_top_y > r_ceilingclip[x] { r_ceilingclip[x] = back_top_y }
+            }
+            if worldback_floor > worldfront_floor && bottex >= 0 {
+                const wall_top = if back_bot_y < ceil_clip { ceil_clip } else { back_bot_y }
+                const wall_bot = if bot_y > floor_clip { floor_clip } else { bot_y }
+                if wall_top <= wall_bot {
+                    const tex_col = r_calc_texcol(seg, rw_angle, dist)
+                    r_draw_wall_column(x, wall_top, wall_bot, bottex, tex_col, scale, worldback_floor, cmap, line["flags"])
+                }
+                if back_bot_y < r_floorclip[x] { r_floorclip[x] = back_bot_y }
+            }
+            r_draw_floor_ceiling(x, top_y, bot_y, ceil_clip, floor_clip, frontsector, dist, cmap_idx)
+            if worldback_ceiling == worldfront_ceiling && worldback_floor == worldfront_floor {
+                r_occlusion[x] = 0
+            }
+        }
+        x = x + 1
+    }
+}
+
+func r_calc_texcol(seg, rw_angle, dist) {
+    const offset = seg["offset"]
+    const sidedef = seg["sidedef"]
+    const texoffset = if sidedef != null { sidedef["textureoffset"] } else { 0 }
+    const angle = rw_angle - seg["angle"]
+    const hyp = fixed_div(dist, fine_cosine(angle >> ANGLETOFINESHIFT << ANGLETOFINESHIFT))
+    const sinv = fine_sine(rw_angle >> ANGLETOFINESHIFT << ANGLETOFINESHIFT)
+    const rw_offset = fixed_mul(hyp, sinv)
+    fixed_to_int(offset + texoffset + rw_offset)
+}
+
+func r_draw_wall_column(x, y1, y2, texnum, texcol, scale, world_top, cmap, flags) {
+    if y1 > y2 || x < 0 || x >= VIEWWIDTH { return }
+    const column = texture_get_column(texnum, texcol)
+    if column == null { return }
+    const tex_h = len(column)
+    if tex_h == 0 { return }
+    let y = y1
+    while y <= y2 {
+        if y >= 0 && y < VIEWHEIGHT {
+            const frac_y = ((y - (r_centery - fixed_to_int(fixed_mul(world_top, scale)))) * tex_h) / (y2 - y1 + 1)
+            const ty = ((frac_y % tex_h) + tex_h) % tex_h
+            let px = column[ty]
+            if cmap != null { px = cmap[px] }
+            r_framebuffer[y * SCREENWIDTH + x] = px
+        }
+        y = y + 1
+    }
+}
+
+func r_draw_color_column(x, y1, y2, color, cmap) {
+    if y1 > y2 { return }
+    let px = color
+    if cmap != null { px = cmap[px] }
+    let y = y1
+    while y <= y2 {
+        if y >= 0 && y < VIEWHEIGHT && x >= 0 && x < SCREENWIDTH {
+            r_framebuffer[y * SCREENWIDTH + x] = px
+        }
+        y = y + 1
+    }
+}
+
+func r_draw_floor_ceiling(x, top_y, bot_y, ceil_clip, floor_clip, sector, dist, cmap_idx) {
+    const ceil_y1 = ceil_clip
+    const ceil_y2 = if top_y - 1 < floor_clip { top_y - 1 } else { floor_clip }
+    if sector["ceilingpic"] == "F_SKY1" {
+        r_draw_sky_column(x, ceil_y1, ceil_y2)
+    } else {
+        const cflat = texture_get_flat(sector["ceilingpic"])
+        if cflat != null && ceil_y1 <= ceil_y2 {
+            r_draw_flat_column(x, ceil_y1, ceil_y2, cflat, sector["ceilingheight"], cmap_idx)
+        }
+    }
+    const floor_y1 = if bot_y + 1 > ceil_clip { bot_y + 1 } else { ceil_clip }
+    const floor_y2 = floor_clip
+    const fflat = texture_get_flat(sector["floorpic"])
+    if fflat != null && floor_y1 <= floor_y2 {
+        r_draw_flat_column(x, floor_y1, floor_y2, fflat, sector["floorheight"], cmap_idx)
+    }
+}
+
+func r_draw_flat_column(x, y1, y2, flat, height, cmap_idx) {
+    const cmap = get_colormap(cmap_idx)
+    let y = y1
+    while y <= y2 {
+        if y >= 0 && y < VIEWHEIGHT && y != r_centery {
+            const dy = abs(y - r_centery)
+            const z = abs(height - r_viewz)
+            const dist = fixed_div(z, dy << FRACBITS >> 6)
+            const s = r_viewsin >> 10
+            const c = r_viewcos >> 10
+            const mapx = (r_viewx + fixed_mul(dist, c)) >> FRACBITS
+            const mapy = (r_viewy - fixed_mul(dist, s)) >> FRACBITS
+            const tx = ((mapx & 63) + 64) % 64
+            const ty = ((mapy & 63) + 64) % 64
+            let px = flat[ty * 64 + tx]
+            if cmap != null { px = cmap[px] }
+            r_framebuffer[y * SCREENWIDTH + x] = px
+        }
+        y = y + 1
+    }
+}
+
+let sky_texture = -1
+func r_draw_sky_column(x, y1, y2) {
+    if sky_texture < 0 { sky_texture = texture_find_index("SKY1") }
+    if sky_texture < 0 { return }
+    const tex = tex_textures[sky_texture]
+    const angle = r_viewangle + r_xtoviewangle[x]
+    const col = fixed_to_int(angle >> ANGLETOFINESHIFT) & (tex["width"] - 1)
+    const column = texture_get_column(sky_texture, col)
+    if column == null { return }
+    let y = y1
+    while y <= y2 {
+        if y >= 0 && y < VIEWHEIGHT {
+            const ty = (y * len(column)) / VIEWHEIGHT
+            r_framebuffer[y * SCREENWIDTH + x] = column[((ty % len(column)) + len(column)) % len(column)]
+        }
+        y = y + 1
+    }
+}
+
+func r_draw_vissprites() {
+    for vs in r_vissprites {
+        r_draw_sprite(vs)
+    }
+}
+
+func r_add_vissprite(thing, tx, tz) {
+    if tz <= 4 * FRACUNIT { return }
+    const scale = fixed_div(r_projection, tz)
+    const x_screen = r_centerx + fixed_to_int(fixed_mul(tx, scale))
+    r_vissprites.push({
+        "thing": thing,
+        "x": x_screen,
+        "scale": scale,
+        "dist": tz
+    })
+}
+
+func r_draw_sprite(vs) {
+    const thing = vs["thing"]
+    if thing == null { return }
+    const sprite_name = thing_get_sprite_name(thing)
+    if sprite_name == null { return }
+    const lump_idx = if tex_sprite_lumps.has(sprite_name) { tex_sprite_lumps[sprite_name] } else { -1 }
+    if lump_idx < 0 { return }
+    const patch = texture_get_patch(lump_idx)
+    if patch == null { return }
+    const scale = vs["scale"]
+    const x = vs["x"] - fixed_to_int(fixed_mul(patch["leftoffset"] << FRACBITS, scale))
+    const dist = vs["dist"]
+    const cmap_idx = colormap_index(thing["sector_light"], dist)
+    const cmap = get_colormap(cmap_idx)
+    let col = 0
+    while col < patch["width"] {
+        const sx = x + fixed_to_int(col * scale)
+        if sx >= 0 && sx < VIEWWIDTH && r_occlusion[sx] == 0 {
+            const top = r_centery - fixed_to_int(fixed_mul((patch["topoffset"] << FRACBITS), scale))
+            let dest_col = []
+            let j = 0
+            while j < VIEWHEIGHT { dest_col.push(-1); j = j + 1 }
+            texture_draw_patch_column(patch, col, dest_col, 0, VIEWHEIGHT, cmap)
+            j = 0
+            while j < VIEWHEIGHT {
+                const sy = top + fixed_to_int(j * scale)
+                if sy >= r_ceilingclip[sx] + 1 && sy <= r_floorclip[sx] - 1 && dest_col[j] >= 0 {
+                    if sy >= 0 && sy < VIEWHEIGHT {
+                        r_framebuffer[sy * SCREENWIDTH + sx] = dest_col[j]
+                    }
+                }
+                j = j + 1
+            }
+        }
+        col = col + 1
+    }
+}
+
+func render_blit(window) {
+    let y = 0
+    while y < SCREENHEIGHT {
+        let x = 0
+        while x < SCREENWIDTH {
+            const px = r_framebuffer[y * SCREENWIDTH + x]
+            const rgb = palette_rgb(px)
+            sdl_set_color(window, rgb["r"], rgb["g"], rgb["b"])
+            sdl_fill_rect(window, x * SCREENSCALE, y * SCREENSCALE, SCREENSCALE, SCREENSCALE)
+            x = x + 1
+        }
+        y = y + 1
+    }
+}
+
+func thing_get_sprite_name(thing) {
+    if thing == null || thing["state"] == null { return null }
+    const state = thing["state"]
+    if state["sprite"] == null { return null }
+    const frame = state["frame"] & 31
+    const frame_char = char_at("ABCDEFGHIJKLMNOPQRSTUVWXYZ", frame)
+    state["sprite"] + frame_char + "0"
+}
+let player_x = 0
+let player_y = 0
+let player_z = 0
+let player_angle = 0
+let player_viewz = 0
+let player_momx = 0
+let player_momy = 0
+let player_health = 100
+let player_armor = 0
+let player_armortype = 0
+let player_ammo = [50, 0, 0, 0]
+let player_maxammo = [200, 50, 300, 50]
+let player_weapons = [true, true, false, false, false, false, false, false, false]
+let player_readyweapon = wp_pistol
+let player_pendingweapon = wp_pistol
+let player_keys = [false, false, false, false, false, false]
+let player_powers = [0, 0, 0, 0, 0, 0]
+let player_cheats = 0
+let player_killcount = 0
+let player_itemcount = 0
+let player_secretcount = 0
+let player_damagecount = 0
+let player_bonuscount = 0
+let player_extralight = 0
+let player_attacking = false
+let player_using = false
+let player_running = false
+let player_sector = null
+let player_floorz = 0
+let player_ceilingz = 0
+let player_refire = 0
+let player_dead = false
+let player_viewheight = VIEWHEIGHT_FRAC
+let player_deltaviewheight = 0
+
+func player_spawn(x, y, angle) {
+    player_x = x
+    player_y = y
+    player_z = 0
+    player_angle = angle * ANG45 / 45
+    player_momx = 0
+    player_momy = 0
+    player_health = 100
+    player_armor = 0
+    player_armortype = 0
+    player_ammo = [50, 0, 0, 0]
+    player_maxammo = [200, 50, 300, 50]
+    player_weapons = [true, true, false, false, false, false, false, false, false]
+    player_readyweapon = wp_pistol
+    player_pendingweapon = wp_pistol
+    player_keys = [false, false, false, false, false, false]
+    player_powers = [0, 0, 0, 0, 0, 0]
+    player_killcount = 0
+    player_itemcount = 0
+    player_secretcount = 0
+    player_damagecount = 0
+    player_bonuscount = 0
+    player_extralight = 0
+    player_dead = false
+    player_refire = 0
+    player_viewheight = VIEWHEIGHT_FRAC
+    player_deltaviewheight = 0
+    const ss_idx = map_get_subsector(player_x, player_y)
+    if ss_idx < map_num_subsectors {
+        player_sector = map_subsectors[ss_idx]["sector"]
+        if player_sector != null {
+            player_floorz = player_sector["floorheight"]
+            player_ceilingz = player_sector["ceilingheight"]
+        }
+    }
+    player_z = player_floorz
+    player_viewz = player_z + player_viewheight
+}
+
+func player_think(cmd) {
+    if player_dead { return }
+    player_move(cmd)
+    player_calc_height()
+    if player_damagecount > 0 { player_damagecount = player_damagecount - 1 }
+    if player_bonuscount > 0 { player_bonuscount = player_bonuscount - 1 }
+    let i = 0
+    while i < NUMPOWERS {
+        if player_powers[i] > 0 { player_powers[i] = player_powers[i] - 1 }
+        i = i + 1
+    }
+    if player_using { player_use_lines() }
+}
+
+func player_move(cmd) {
+    const forwardmove = cmd["forward"]
+    const sidemove = cmd["side"]
+    const angleturn = cmd["turn"]
+    player_running = cmd["run"]
+    player_angle = player_angle + angleturn
+    while player_angle >= ANG360 { player_angle = player_angle - ANG360 }
+    while player_angle < 0 { player_angle = player_angle + ANG360 }
+    if forwardmove != 0 {
+        const thrust = if player_running { forwardmove * 2 } else { forwardmove }
+        player_momx = player_momx + fixed_mul(thrust << 13, fine_cosine(player_angle))
+        player_momy = player_momy + fixed_mul(thrust << 13, fine_sine(player_angle))
+    }
+    if sidemove != 0 {
+        const thrust = if player_running { sidemove * 2 } else { sidemove }
+        const sideangle = (player_angle - ANG90 + ANG360) % ANG360
+        player_momx = player_momx + fixed_mul(thrust << 13, fine_cosine(sideangle))
+        player_momy = player_momy + fixed_mul(thrust << 13, fine_sine(sideangle))
+    }
+    const newx = player_x + player_momx
+    const newy = player_y + player_momy
+    if player_try_move(newx, newy) {
+        player_x = newx
+        player_y = newy
+    } else {
+        if player_try_move(newx, player_y) {
+            player_x = newx
+            player_momy = 0
+        } else if player_try_move(player_x, newy) {
+            player_y = newy
+            player_momx = 0
+        } else {
+            player_momx = 0
+            player_momy = 0
+        }
+    }
+    player_momx = fixed_mul(player_momx, FRICTION)
+    player_momy = fixed_mul(player_momy, FRICTION)
+    if abs(player_momx) < STOPSPEED { player_momx = 0 }
+    if abs(player_momy) < STOPSPEED { player_momy = 0 }
+    const ss_idx = map_get_subsector(player_x, player_y)
+    if ss_idx < map_num_subsectors {
+        player_sector = map_subsectors[ss_idx]["sector"]
+        if player_sector != null {
+            player_floorz = player_sector["floorheight"]
+            player_ceilingz = player_sector["ceilingheight"]
+        }
+    }
+    if player_z < player_floorz {
+        player_z = player_floorz
+    }
+}
+
+func player_try_move(newx, newy) {
+    const radius = 16 << FRACBITS
+    let i = 0
+    while i < map_num_linedefs {
+        const line = map_linedefs[i]
+        const lx1 = line["v1"]["x"]
+        const ly1 = line["v1"]["y"]
+        const lx2 = line["v2"]["x"]
+        const ly2 = line["v2"]["y"]
+        if newx + radius < line["bbox"]["left"] || newx - radius > line["bbox"]["right"] ||
+           newy + radius < line["bbox"]["bottom"] || newy - radius > line["bbox"]["top"] {
+            i = i + 1; continue
+        }
+        const side1 = point_on_side(player_x, player_y, lx1, ly1, line["dx"], line["dy"])
+        const side2 = point_on_side(newx, newy, lx1, ly1, line["dx"], line["dy"])
+        if side1 == side2 { i = i + 1; continue }
+        if (line["flags"] & ML_BLOCKING) != 0 { return false }
+        if line["backsector"] == null { return false }
+        const front = line["frontsector"]
+        const back = line["backsector"]
+        if front == null || back == null { return false }
+        const floor_h = if back["floorheight"] > front["floorheight"] { back["floorheight"] } else { front["floorheight"] }
+        const ceil_h = if back["ceilingheight"] < front["ceilingheight"] { back["ceilingheight"] } else { front["ceilingheight"] }
+        if ceil_h - floor_h < (56 << FRACBITS) { return false }
+        if floor_h - player_z > MAXSTEP { return false }
+        i = i + 1
+    }
+    true
+}
+
+func player_calc_height() {
+    player_viewheight = player_viewheight + player_deltaviewheight
+    if player_viewheight > VIEWHEIGHT_FRAC {
+        player_viewheight = VIEWHEIGHT_FRAC
+        player_deltaviewheight = 0
+    }
+    if player_viewheight < VIEWHEIGHT_FRAC / 2 {
+        player_viewheight = VIEWHEIGHT_FRAC / 2
+        if player_deltaviewheight <= 0 { player_deltaviewheight = 1 }
+    }
+    player_viewz = player_z + player_viewheight
+    if player_viewz > player_ceilingz - 4 * FRACUNIT {
+        player_viewz = player_ceilingz - 4 * FRACUNIT
+    }
+}
+
+func player_use_lines() {
+    const useangle = player_angle
+    const x2 = player_x + fixed_mul(USERANGE, fine_cosine(useangle))
+    const y2 = player_y + fixed_mul(USERANGE, fine_sine(useangle))
+    let i = 0
+    while i < map_num_linedefs {
+        const line = map_linedefs[i]
+        if line["special"] == 0 { i = i + 1; continue }
+        const side1 = point_on_side(player_x, player_y, line["v1"]["x"], line["v1"]["y"], line["dx"], line["dy"])
+        const side2 = point_on_side(x2, y2, line["v1"]["x"], line["v1"]["y"], line["dx"], line["dy"])
+        if side1 != side2 {
+            doors_use_line(line, side1)
+        }
+        i = i + 1
+    }
+    player_using = false
+}
+
+func player_damage(damage, source) {
+    if player_dead { return }
+    if player_powers[pw_invulnerability] > 0 { return }
+    if player_armortype > 0 {
+        let saved = damage / 3
+        if player_armortype == 1 { saved = damage / 3 }
+        if saved > player_armor { saved = player_armor }
+        player_armor = player_armor - saved
+        damage = damage - saved
+        if player_armor <= 0 { player_armortype = 0 }
+    }
+    player_health = player_health - damage
+    player_damagecount = player_damagecount + damage
+    if player_damagecount > 100 { player_damagecount = 100 }
+    if player_health <= 0 {
+        player_health = 0
+        player_dead = true
+    }
+}
+
+func player_give_weapon(weapon) {
+    if weapon < 0 || weapon >= NUMWEAPONS { return false }
+    if player_weapons[weapon] { return false }
+    player_weapons[weapon] = true
+    player_pendingweapon = weapon
+    true
+}
+
+func player_give_ammo(ammotype, count) {
+    if ammotype < 0 || ammotype >= NUMAMMO { return false }
+    if player_ammo[ammotype] >= player_maxammo[ammotype] { return false }
+    player_ammo[ammotype] = player_ammo[ammotype] + count
+    if player_ammo[ammotype] > player_maxammo[ammotype] {
+        player_ammo[ammotype] = player_maxammo[ammotype]
+    }
+    true
+}
+
+func player_give_key(key) {
+    if key < 0 || key >= NUMCARDS { return }
+    player_keys[key] = true
+    player_bonuscount = 6
+}
+
+func player_give_health(amount) {
+    if player_health >= MAXHEALTH { return false }
+    player_health = player_health + amount
+    if player_health > MAXHEALTH { player_health = MAXHEALTH }
+    true
+}
+
+func player_give_armor(armortype, amount) {
+    if player_armor >= amount { return false }
+    player_armortype = armortype
+    player_armor = amount
+    true
+}
+let mobj_list = []
+let mobj_id_counter = 0
+
+func mobj_spawn(x, y, mtype) {
+    const info = mobjinfo_get(mtype)
+    if info == null { return null }
+    mobj_id_counter = mobj_id_counter + 1
+    const mobj = {
+        "id": mobj_id_counter,
+        "x": x, "y": y, "z": 0,
+        "angle": 0,
+        "momx": 0, "momy": 0, "momz": 0,
+        "type": mtype,
+        "info": info,
+        "health": info["spawnhealth"],
+        "flags": info["flags"],
+        "radius": info["radius"],
+        "height": info["height"],
+        "speed": info["speed"],
+        "state": null,
+        "tics": 0,
+        "sprite": null,
+        "frame": 0,
+        "target": null,
+        "threshold": 0,
+        "reactiontime": info["reactiontime"],
+        "movecount": 0,
+        "movedir": 8,
+        "sector": null,
+        "sector_light": 160,
+        "floorz": 0,
+        "ceilingz": 0,
+        "subsector": 0
+    }
+    mobj_set_state(mobj, info["spawnstate"])
+    const ss_idx = map_get_subsector(x, y)
+    if ss_idx < map_num_subsectors {
+        const sec = map_subsectors[ss_idx]["sector"]
+        if sec != null {
+            mobj["sector"] = sec
+            mobj["sector_light"] = sec["lightlevel"]
+            mobj["floorz"] = sec["floorheight"]
+            mobj["ceilingz"] = sec["ceilingheight"]
+        }
+    }
+    if (info["flags"] & MF_SPAWNCEILING) != 0 {
+        mobj["z"] = mobj["ceilingz"] - info["height"]
+    } else {
+        mobj["z"] = mobj["floorz"]
+    }
+    mobj_list.push(mobj)
+    mobj
+}
+
+func mobj_set_state(mobj, state_idx) {
+    if state_idx < 0 || state_idx >= len(game_states) {
+        mobj["state"] = null
+        mobj["tics"] = -1
+        return
+    }
+    const st = game_states[state_idx]
+    mobj["state"] = st
+    mobj["tics"] = st["tics"]
+    mobj["sprite"] = st["sprite"]
+    mobj["frame"] = st["frame"]
+}
+
+func mobj_think(mobj) {
+    if mobj["tics"] == -1 { return }
+    mobj["tics"] = mobj["tics"] - 1
+    if mobj["tics"] <= 0 {
+        const st = mobj["state"]
+        if st != null && st["nextstate"] >= 0 {
+            mobj_set_state(mobj, st["nextstate"])
+            const new_st = mobj["state"]
+            if new_st != null && new_st["action"] != null {
+                new_st["action"](mobj)
+            }
+        } else {
+            mobj_remove(mobj)
+        }
+    }
+    if (mobj["flags"] & MF_MISSILE) != 0 {
+        mobj["x"] = mobj["x"] + mobj["momx"]
+        mobj["y"] = mobj["y"] + mobj["momy"]
+        mobj["z"] = mobj["z"] + mobj["momz"]
+    } else if mobj["momx"] != 0 || mobj["momy"] != 0 {
+        mobj_xy_movement(mobj)
+    }
+    if (mobj["flags"] & MF_NOGRAVITY) == 0 {
+        if mobj["z"] > mobj["floorz"] {
+            mobj["momz"] = mobj["momz"] - GRAVITY
+        }
+        mobj["z"] = mobj["z"] + mobj["momz"]
+        if mobj["z"] <= mobj["floorz"] {
+            mobj["z"] = mobj["floorz"]
+            mobj["momz"] = 0
+        }
+    }
+    const ss_idx = map_get_subsector(mobj["x"], mobj["y"])
+    if ss_idx < map_num_subsectors {
+        const sec = map_subsectors[ss_idx]["sector"]
+        if sec != null {
+            mobj["sector"] = sec
+            mobj["sector_light"] = sec["lightlevel"]
+            mobj["floorz"] = sec["floorheight"]
+            mobj["ceilingz"] = sec["ceilingheight"]
+        }
+    }
+}
+
+func mobj_xy_movement(mobj) {
+    const newx = mobj["x"] + mobj["momx"]
+    const newy = mobj["y"] + mobj["momy"]
+    mobj["x"] = newx
+    mobj["y"] = newy
+    mobj["momx"] = fixed_mul(mobj["momx"], FRICTION)
+    mobj["momy"] = fixed_mul(mobj["momy"], FRICTION)
+    if abs(mobj["momx"]) < STOPSPEED { mobj["momx"] = 0 }
+    if abs(mobj["momy"]) < STOPSPEED { mobj["momy"] = 0 }
+}
+
+func mobj_remove(mobj) {
+    mobj["flags"] = 0
+    mobj["health"] = 0
+    mobj["tics"] = -1
+    mobj["state"] = null
+}
+
+func mobj_damage(target, inflictor, source, damage) {
+    if (target["flags"] & MF_SHOOTABLE) == 0 { return }
+    if target["health"] <= 0 { return }
+    target["health"] = target["health"] - damage
+    if target["health"] <= 0 {
+        mobj_kill(target, source)
+        return
+    }
+    target["reactiontime"] = 0
+    if target["target"] == null || target["target"]["health"] <= 0 {
+        target["target"] = source
+    }
+    if target["info"] != null && target["info"]["painstate"] >= 0 {
+        const chance = target["info"]["painchance"]
+        if random_int(256) < chance {
+            mobj_set_state(target, target["info"]["painstate"])
+        }
+    }
+}
+
+func mobj_kill(target, source) {
+    target["flags"] = target["flags"] & ((MF_SHOOTABLE | MF_FLOAT | MF_SKULLFLY) ^ -1)
+    target["flags"] = target["flags"] | MF_CORPSE
+    target["height"] = target["height"] >> 2
+    if (target["flags"] & MF_COUNTKILL) != 0 {
+        player_killcount = player_killcount + 1
+    }
+    if target["info"] != null && target["info"]["deathstate"] >= 0 {
+        mobj_set_state(target, target["info"]["deathstate"])
+    }
+}
+
+func things_spawn_map() {
+    mobj_list = []
+    mobj_id_counter = 0
+    let player_thing = null
+    for thing in map_things {
+        const ttype = thing["type"]
+        const opts = thing["options"]
+        if (opts & MTF_NORMAL) == 0 && ttype != 1 && ttype != 11 { continue }
+        if ttype == 1 {
+            player_thing = thing
+            continue
+        }
+        const mobj = mobj_spawn(thing["x"], thing["y"], ttype)
+        if mobj != null {
+            mobj["angle"] = thing["angle"] * ANG45 / 45
+            if (opts & MTF_AMBUSH) != 0 {
+                mobj["flags"] = mobj["flags"] | MF_AMBUSH
+            }
+        }
+    }
+    if player_thing != null {
+        player_spawn(player_thing["x"], player_thing["y"], player_thing["angle"])
+    } else {
+        player_spawn(0, 0, 0)
+    }
+    println(f"Spawned {len(mobj_list)} things, player at ({fixed_to_int(player_x)}, {fixed_to_int(player_y)})")
+}
+
+func things_run_thinkers() {
+    let i = 0
+    while i < len(mobj_list) {
+        const mobj = mobj_list[i]
+        if mobj["health"] > 0 || (mobj["flags"] & MF_CORPSE) != 0 {
+            mobj_think(mobj)
+        }
+        i = i + 1
+    }
+}
+
+func things_add_vissprites() {
+    for mobj in mobj_list {
+        if mobj["state"] == null { continue }
+        if mobj["health"] <= 0 && (mobj["flags"] & MF_CORPSE) == 0 { continue }
+        const dx = mobj["x"] - r_viewx
+        const dy = mobj["y"] - r_viewy
+        const tz = fixed_mul(dx, r_viewcos) + fixed_mul(dy, r_viewsin)
+        if tz <= 4 * FRACUNIT { continue }
+        const tx = fixed_mul(dx, r_viewsin) - fixed_mul(dy, r_viewcos)
+        r_add_vissprite(mobj, tx, tz)
+    }
+}
+
+let game_states = []
+let game_random_idx = 0
+const random_table = [
+    0, 8, 109, 220, 222, 241, 149, 107, 75, 248, 254, 140, 16, 66, 74, 21,
+    211, 47, 80, 242, 154, 27, 205, 128, 161, 89, 77, 36, 95, 110, 85, 48,
+    212, 140, 211, 249, 22, 79, 200, 50, 28, 188, 52, 140, 202, 120, 68, 145,
+    62, 70, 184, 190, 91, 197, 152, 224, 149, 104, 25, 178, 252, 182, 202, 182,
+    141, 197, 4, 81, 181, 242, 145, 42, 39, 227, 156, 198, 225, 193, 219, 93,
+    122, 175, 249, 0, 175, 143, 70, 239, 46, 246, 163, 53, 163, 109, 168, 135,
+    2, 235, 25, 92, 20, 145, 138, 77, 69, 166, 78, 176, 173, 212, 166, 113,
+    94, 161, 41, 50, 239, 49, 111, 164, 70, 60, 2, 37, 171, 75, 136, 156,
+    11, 56, 42, 146, 138, 229, 73, 146, 77, 61, 98, 196, 135, 106, 63, 197,
+    195, 86, 96, 203, 113, 101, 170, 247, 181, 113, 80, 250, 108, 7, 255, 237,
+    129, 226, 79, 107, 112, 166, 103, 241, 24, 223, 239, 120, 198, 58, 60, 82,
+    128, 3, 184, 66, 143, 224, 145, 224, 81, 206, 163, 45, 63, 90, 168, 114,
+    59, 33, 159, 95, 28, 139, 123, 98, 125, 196, 15, 70, 194, 253, 54, 14,
+    109, 226, 71, 17, 161, 93, 186, 87, 244, 138, 20, 52, 123, 204, 26, 60,
+    98, 55, 75, 185, 120, 252, 48, 196, 243, 150, 8, 89, 38, 169, 213, 6,
+    30, 123, 100, 134, 138, 212, 112, 211, 173, 15, 32, 145, 44, 11, 9, 186
+]
+
+func random_int(max) {
+    game_random_idx = (game_random_idx + 1) & 255
+    random_table[game_random_idx] % max
+}
+const DI_EAST = 0
+const DI_NORTHEAST = 1
+const DI_NORTH = 2
+const DI_NORTHWEST = 3
+const DI_WEST = 4
+const DI_SOUTHWEST = 5
+const DI_SOUTH = 6
+const DI_SOUTHEAST = 7
+const DI_NODIR = 8
+const NUMDIR = 9
+
+const xspeed = [FRACUNIT, 47000, 0, -47000, -FRACUNIT, -47000, 0, 47000]
+const yspeed = [0, 47000, FRACUNIT, 47000, 0, -47000, -FRACUNIT, -47000]
+
+func a_look(mobj) {
+    if mobj["target"] != null && mobj["target"]["health"] > 0 { return }
+    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
+    if dist < 1024 * FRACUNIT {
+        if check_sight(mobj) {
+            mobj["target"] = {"type": "player", "x": player_x, "y": player_y, "health": player_health}
+            if mobj["info"] != null && mobj["info"]["seestate"] >= 0 {
+                mobj_set_state(mobj, mobj["info"]["seestate"])
+            }
+        }
+    }
+}
+
+func a_chase(mobj) {
+    if mobj["reactiontime"] > 0 { mobj["reactiontime"] = mobj["reactiontime"] - 1 }
+    if mobj["target"] == null || mobj["target"]["health"] <= 0 {
+        mobj["target"] = {"type": "player", "x": player_x, "y": player_y, "health": player_health}
+    }
+    if mobj["threshold"] > 0 { mobj["threshold"] = mobj["threshold"] - 1 }
+    const target = mobj["target"]
+    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
+    if mobj["info"] != null && mobj["info"]["meleestate"] >= 0 && dist < MELEERANGE {
+        a_face_target(mobj)
+        mobj_set_state(mobj, mobj["info"]["meleestate"])
+        return
+    }
+    if mobj["info"] != null && mobj["info"]["missilestate"] >= 0 && mobj["movecount"] <= 0 {
+        if check_sight(mobj) && random_int(256) < 200 {
+            a_face_target(mobj)
+            mobj_set_state(mobj, mobj["info"]["missilestate"])
+            mobj["movecount"] = random_int(15) + 5
+            return
+        }
+    }
+    mobj["movecount"] = mobj["movecount"] - 1
+    if mobj["movecount"] < 0 || !mobj_try_walk(mobj) {
+        mobj_new_chase_dir(mobj)
+    }
+    if mobj["movedir"] != DI_NODIR {
+        const speed = mobj["speed"]
+        const dir = mobj["movedir"]
+        if dir < 8 {
+            mobj["momx"] = fixed_mul(speed, xspeed[dir])
+            mobj["momy"] = fixed_mul(speed, yspeed[dir])
+        }
+    }
+}
+
+func a_face_target(mobj) {
+    mobj["angle"] = point_to_angle_2(mobj["x"], mobj["y"], player_x, player_y)
+}
+
+func a_pos_attack(mobj) {
+    a_face_target(mobj)
+    const damage = (random_int(5) + 1) * 3
+    p_line_attack(mobj, mobj["angle"], MISSILERANGE, 0, damage)
+}
+
+func a_spos_attack(mobj) {
+    a_face_target(mobj)
+    let i = 0
+    while i < 3 {
+        const angle = mobj["angle"] + ((random_int(256) - 128) << 18)
+        const damage = (random_int(5) + 1) * 3
+        p_line_attack(mobj, angle, MISSILERANGE, 0, damage)
+        i = i + 1
+    }
+}
+
+func a_troop_attack(mobj) {
+    a_face_target(mobj)
+    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
+    if dist < MELEERANGE {
+        const damage = (random_int(8) + 1) * 3
+        player_damage(damage, mobj)
+    } else {
+        p_spawn_missile(mobj, "MT_TROOPSHOT")
+    }
+}
+
+func a_sarg_attack(mobj) {
+    a_face_target(mobj)
+    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
+    if dist < MELEERANGE {
+        const damage = (random_int(10) + 1) * 4
+        player_damage(damage, mobj)
+    }
+}
+
+func a_head_attack(mobj) {
+    a_face_target(mobj)
+    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
+    if dist < MELEERANGE {
+        const damage = (random_int(6) + 1) * 10
+        player_damage(damage, mobj)
+    } else {
+        p_spawn_missile(mobj, "MT_HEADSHOT")
+    }
+}
+
+func a_skull_attack(mobj) {
+    a_face_target(mobj)
+    mobj["flags"] = mobj["flags"] | MF_SKULLFLY
+    const angle = mobj["angle"]
+    mobj["momx"] = fixed_mul(20 * FRACUNIT, fine_cosine(angle))
+    mobj["momy"] = fixed_mul(20 * FRACUNIT, fine_sine(angle))
+    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
+    const dz = player_viewz - mobj["z"]
+    const slope = if dist != 0 { fixed_div(dz, dist) } else { 0 }
+    mobj["momz"] = fixed_mul(20 * FRACUNIT, slope)
+}
+
+func a_bruis_attack(mobj) {
+    a_face_target(mobj)
+    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
+    if dist < MELEERANGE {
+        const damage = (random_int(8) + 1) * 10
+        player_damage(damage, mobj)
+    } else {
+        p_spawn_missile(mobj, "MT_BRUISERSHOT")
+    }
+}
+
+func a_cyber_attack(mobj) {
+    a_face_target(mobj)
+    p_spawn_missile(mobj, "MT_ROCKET")
+}
+
+func a_spid_attack(mobj) {
+    a_face_target(mobj)
+    let i = 0
+    while i < 3 {
+        const angle = mobj["angle"] + ((random_int(256) - 128) << 18)
+        const damage = (random_int(5) + 1) * 3
+        p_line_attack(mobj, angle, MISSILERANGE, 0, damage)
+        i = i + 1
+    }
+}
+
+func a_pain(mobj) {
+    // pain sound would play here
+}
+
+func a_fall(mobj) {
+    mobj["flags"] = mobj["flags"] & (MF_SOLID ^ -1)
+}
+
+func a_scream(mobj) {
+    // death sound
+}
+
+func a_xscream(mobj) {
+    // extreme death sound
+}
+
+func check_sight(mobj) {
+    if player_dead { return false }
+    const sector_m = mobj["sector"]
+    if sector_m != null && player_sector != null {
+        if map_check_reject(sector_m["index"], player_sector["index"]) { return false }
+    }
+    const dist = point_to_dist(mobj["x"], mobj["y"], player_x, player_y)
+    if dist > 2048 * FRACUNIT { return false }
+    true
+}
+
+func mobj_try_walk(mobj) {
+    if mobj["movedir"] == DI_NODIR { return false }
+    const speed = mobj["speed"]
+    const dir = mobj["movedir"]
+    if dir >= 8 { return false }
+    const newx = mobj["x"] + fixed_mul(speed, xspeed[dir])
+    const newy = mobj["y"] + fixed_mul(speed, yspeed[dir])
+    true
+}
+
+func mobj_new_chase_dir(mobj) {
+    const dx = player_x - mobj["x"]
+    const dy = player_y - mobj["y"]
+    let d1 = DI_NODIR
+    let d2 = DI_NODIR
+    if dx > 10 * FRACUNIT { d1 = DI_EAST }
+    else if dx < -10 * FRACUNIT { d1 = DI_WEST }
+    if dy > 10 * FRACUNIT { d2 = DI_NORTH }
+    else if dy < -10 * FRACUNIT { d2 = DI_SOUTH }
+    if d1 != DI_NODIR && d2 != DI_NODIR {
+        const diags = [[DI_NODIR]*3, [DI_NODIR]*3, [DI_NODIR]*3]
+        if d1 == DI_EAST && d2 == DI_NORTH { mobj["movedir"] = DI_NORTHEAST }
+        else if d1 == DI_EAST && d2 == DI_SOUTH { mobj["movedir"] = DI_SOUTHEAST }
+        else if d1 == DI_WEST && d2 == DI_NORTH { mobj["movedir"] = DI_NORTHWEST }
+        else if d1 == DI_WEST && d2 == DI_SOUTH { mobj["movedir"] = DI_SOUTHWEST }
+        else { mobj["movedir"] = d1 }
+    } else if d1 != DI_NODIR {
+        mobj["movedir"] = d1
+    } else if d2 != DI_NODIR {
+        mobj["movedir"] = d2
+    } else {
+        mobj["movedir"] = random_int(8)
+    }
+    mobj["movecount"] = random_int(15) + 5
+}
+
+func p_line_attack(source, angle, range, slope, damage) {
+    const cos_a = fine_cosine(angle)
+    const sin_a = fine_sine(angle)
+    const dx = fixed_mul(range, cos_a)
+    const dy = fixed_mul(range, sin_a)
+    const dist = point_to_dist(source["x"], source["y"], player_x, player_y)
+    if dist < range {
+        const ang_to_player = point_to_angle_2(source["x"], source["y"], player_x, player_y)
+        let diff = ang_to_player - angle
+        while diff > ANG180 { diff = diff - ANG360 }
+        while diff < -ANG180 { diff = diff + ANG360 }
+        if abs(diff) < ANG45 / 2 {
+            player_damage(damage, source)
+        }
+    }
+}
+
+func p_spawn_missile(source, missile_type) {
+    const angle = source["angle"]
+    const speed = 20 * FRACUNIT
+    const mx = fixed_mul(speed, fine_cosine(angle))
+    const my = fixed_mul(speed, fine_sine(angle))
+    const missile = mobj_spawn(source["x"], source["y"] + 32 * FRACUNIT, 0)
+    if missile != null {
+        missile["momx"] = mx
+        missile["momy"] = my
+        missile["angle"] = angle
+        missile["flags"] = MF_MISSILE | MF_NOBLOCKMAP | MF_NOGRAVITY
+    }
+}
+let weapon_state = "ready"
+let weapon_tics = 0
+let weapon_frame = 0
+let weapon_flash = false
+let weapon_flash_tics = 0
+
+const weapon_info = [
+    {"ammo": am_noammo, "upstate": 0, "downstate": 0, "readystate": 0, "atkstate": 0, "flashstate": -1},
+    {"ammo": am_clip,   "upstate": 0, "downstate": 0, "readystate": 0, "atkstate": 0, "flashstate": -1},
+    {"ammo": am_shell,  "upstate": 0, "downstate": 0, "readystate": 0, "atkstate": 0, "flashstate": -1},
+    {"ammo": am_clip,   "upstate": 0, "downstate": 0, "readystate": 0, "atkstate": 0, "flashstate": -1},
+    {"ammo": am_misl,   "upstate": 0, "downstate": 0, "readystate": 0, "atkstate": 0, "flashstate": -1},
+    {"ammo": am_cell,   "upstate": 0, "downstate": 0, "readystate": 0, "atkstate": 0, "flashstate": -1},
+    {"ammo": am_cell,   "upstate": 0, "downstate": 0, "readystate": 0, "atkstate": 0, "flashstate": -1},
+    {"ammo": am_noammo, "upstate": 0, "downstate": 0, "readystate": 0, "atkstate": 0, "flashstate": -1},
+    {"ammo": am_shell,  "upstate": 0, "downstate": 0, "readystate": 0, "atkstate": 0, "flashstate": -1}
+]
+
+const ammo_per_shot = [0, 1, 1, 1, 1, 1, 40, 0, 2]
+
+func weapon_tick() {
+    if player_dead { return }
+    if player_pendingweapon != player_readyweapon {
+        weapon_state = "lowering"
+        weapon_tics = 6
+        return
+    }
+    match weapon_state {
+        "ready" => {
+            if player_attacking {
+                weapon_fire()
+            }
+        },
+        "firing" => {
+            weapon_tics = weapon_tics - 1
+            if weapon_tics <= 0 {
+                weapon_state = "ready"
+                player_refire = 0
+            }
+        },
+        "raising" => {
+            weapon_tics = weapon_tics - 1
+            if weapon_tics <= 0 {
+                weapon_state = "ready"
+            }
+        },
+        "lowering" => {
+            weapon_tics = weapon_tics - 1
+            if weapon_tics <= 0 {
+                player_readyweapon = player_pendingweapon
+                weapon_state = "raising"
+                weapon_tics = 6
+            }
+        },
+        _ => {}
+    }
+    if weapon_flash_tics > 0 {
+        weapon_flash_tics = weapon_flash_tics - 1
+        if weapon_flash_tics <= 0 { weapon_flash = false }
+    }
+}
+
+func weapon_fire() {
+    const wp = player_readyweapon
+    const ammo_type = weapon_info[wp]["ammo"]
+    const cost = ammo_per_shot[wp]
+    if ammo_type != am_noammo {
+        if player_ammo[ammo_type] < cost { return }
+        player_ammo[ammo_type] = player_ammo[ammo_type] - cost
+    }
+    weapon_state = "firing"
+    weapon_flash = true
+    weapon_flash_tics = 4
+    player_extralight = 2
+    match wp {
+        wp_fist => weapon_fire_fist(),
+        wp_chainsaw => weapon_fire_chainsaw(),
+        wp_pistol => { weapon_fire_bullet(1, 5, 15); weapon_tics = 10 },
+        wp_shotgun => { weapon_fire_shotgun(); weapon_tics = 20 },
+        wp_chaingun => { weapon_fire_bullet(1, 5, 15); weapon_tics = 4 },
+        wp_missile => { weapon_fire_rocket(); weapon_tics = 12 },
+        wp_plasma => { weapon_fire_plasma(); weapon_tics = 3 },
+        wp_bfg => { weapon_fire_bfg(); weapon_tics = 40 },
+        wp_supershotgun => { weapon_fire_ssg(); weapon_tics = 30 },
+        _ => { weapon_tics = 10 }
+    }
+}
+
+func weapon_fire_fist() {
+    const angle = player_angle + ((random_int(256) - 128) << 18)
+    const damage = (random_int(10) + 1) * 2
+    const berserk_mult = if player_powers[pw_strength] > 0 { 10 } else { 1 }
+    weapon_melee_attack(damage * berserk_mult, MELEERANGE)
+    weapon_tics = 8
+}
+
+func weapon_fire_chainsaw() {
+    const damage = (random_int(10) + 1) * 2
+    weapon_melee_attack(damage, MELEERANGE + FRACUNIT)
+    weapon_tics = 4
+}
+
+func weapon_fire_bullet(count, min_dmg, max_dmg) {
+    let i = 0
+    while i < count {
+        const angle = player_angle + ((random_int(256) - 128) << 18)
+        const damage = random_int(max_dmg - min_dmg + 1) + min_dmg
+        weapon_hitscan(angle, MISSILERANGE, damage)
+        i = i + 1
+    }
+}
+
+func weapon_fire_shotgun() {
+    let i = 0
+    while i < 7 {
+        const angle = player_angle + ((random_int(256) - 128) << 18)
+        const damage = random_int(11) + 5
+        weapon_hitscan(angle, MISSILERANGE, damage)
+        i = i + 1
+    }
+}
+
+func weapon_fire_ssg() {
+    let i = 0
+    while i < 20 {
+        const angle = player_angle + ((random_int(512) - 256) << 17)
+        const damage = random_int(11) + 5
+        weapon_hitscan(angle, MISSILERANGE, damage)
+        i = i + 1
+    }
+}
+
+func weapon_fire_rocket() {
+    const angle = player_angle
+    const speed = 20 * FRACUNIT
+    const missile = mobj_spawn(
+        player_x + fixed_mul(32 * FRACUNIT, fine_cosine(angle)),
+        player_y + fixed_mul(32 * FRACUNIT, fine_sine(angle)),
+        0
+    )
+    if missile != null {
+        missile["momx"] = fixed_mul(speed, fine_cosine(angle))
+        missile["momy"] = fixed_mul(speed, fine_sine(angle))
+        missile["flags"] = MF_MISSILE | MF_NOBLOCKMAP | MF_NOGRAVITY
+        missile["angle"] = angle
+    }
+}
+
+func weapon_fire_plasma() {
+    const angle = player_angle
+    const speed = 25 * FRACUNIT
+    const missile = mobj_spawn(
+        player_x + fixed_mul(16 * FRACUNIT, fine_cosine(angle)),
+        player_y + fixed_mul(16 * FRACUNIT, fine_sine(angle)),
+        0
+    )
+    if missile != null {
+        missile["momx"] = fixed_mul(speed, fine_cosine(angle))
+        missile["momy"] = fixed_mul(speed, fine_sine(angle))
+        missile["flags"] = MF_MISSILE | MF_NOBLOCKMAP | MF_NOGRAVITY
+    }
+}
+
+func weapon_fire_bfg() {
+    const angle = player_angle
+    const speed = 25 * FRACUNIT
+    const missile = mobj_spawn(
+        player_x + fixed_mul(32 * FRACUNIT, fine_cosine(angle)),
+        player_y + fixed_mul(32 * FRACUNIT, fine_sine(angle)),
+        0
+    )
+    if missile != null {
+        missile["momx"] = fixed_mul(speed, fine_cosine(angle))
+        missile["momy"] = fixed_mul(speed, fine_sine(angle))
+        missile["flags"] = MF_MISSILE | MF_NOBLOCKMAP | MF_NOGRAVITY
+        missile["health"] = 100
+    }
+}
+
+func weapon_melee_attack(damage, range) {
+    let closest = null
+    let closest_dist = range
+    for mobj in mobj_list {
+        if (mobj["flags"] & MF_SHOOTABLE) == 0 { continue }
+        if mobj["health"] <= 0 { continue }
+        const dist = point_to_dist(player_x, player_y, mobj["x"], mobj["y"])
+        if dist < closest_dist {
+            const ang = point_to_angle_2(player_x, player_y, mobj["x"], mobj["y"])
+            let diff = ang - player_angle
+            while diff > ANG180 { diff = diff - ANG360 }
+            while diff < -ANG180 { diff = diff + ANG360 }
+            if abs(diff) < ANG90 {
+                closest = mobj
+                closest_dist = dist
+            }
+        }
+    }
+    if closest != null {
+        mobj_damage(closest, null, null, damage)
+    }
+}
+
+func weapon_hitscan(angle, range, damage) {
+    let closest = null
+    let closest_dist = range
+    for mobj in mobj_list {
+        if (mobj["flags"] & MF_SHOOTABLE) == 0 { continue }
+        if mobj["health"] <= 0 { continue }
+        const dist = point_to_dist(player_x, player_y, mobj["x"], mobj["y"])
+        if dist >= range { continue }
+        const ang = point_to_angle_2(player_x, player_y, mobj["x"], mobj["y"])
+        let diff = ang - angle
+        while diff > ANG180 { diff = diff - ANG360 }
+        while diff < -ANG180 { diff = diff + ANG360 }
+        const half_angle = point_to_angle_2(0, 0, dist, mobj["radius"])
+        if abs(diff) < half_angle && dist < closest_dist {
+            closest = mobj
+            closest_dist = dist
+        }
+    }
+    if closest != null {
+        mobj_damage(closest, null, null, damage)
+    }
+}
+let door_thinkers = []
+
+const VDOORSPEED = 2 * FRACUNIT
+const VDOORWAIT = 150
+
+func doors_init() {
+    door_thinkers = []
+}
+
+func doors_use_line(line, side) {
+    const special = line["special"]
+    if special == 0 { return }
+    match special {
+        1 => door_open_standard(line),
+        26 => door_open_keyed(line, it_bluecard, it_blueskull),
+        27 => door_open_keyed(line, it_yellowcard, it_yellowskull),
+        28 => door_open_keyed(line, it_redcard, it_redskull),
+        31 => door_open_stay(line),
+        32 => door_open_keyed_stay(line, it_bluecard, it_blueskull),
+        33 => door_open_keyed_stay(line, it_redcard, it_redskull),
+        34 => door_open_keyed_stay(line, it_yellowcard, it_yellowskull),
+        46 => door_open_stay(line),
+        62 => plat_down_wait_up(line),
+        63 => door_open_standard(line),
+        103 => door_open_standard(line),
+        29 => door_open_standard(line),
+        111 => door_open_blazing(line),
+        117 => door_open_blazing_stay(line),
+        _ => door_generic_special(line, special)
+    }
+}
+
+func doors_walk_line(line) {
+    const special = line["special"]
+    if special == 0 { return }
+    match special {
+        2 => door_open_stay(line),
+        3 => door_close(line),
+        4 => door_open_standard(line),
+        16 => door_close_wait_open(line),
+        10 => plat_down_wait_up(line),
+        22 => plat_down_wait_up(line),
+        36 => floor_lower_to_highest(line),
+        38 => floor_lower_to_lowest(line),
+        52 => { line["special"] = 0 },
+        88 => plat_down_wait_up(line),
+        90 => door_open_standard(line),
+        97 => teleport_thing(line),
+        39 => teleport_thing(line),
+        _ => {}
+    }
+}
+
+func door_open_standard(line) {
+    const sector = find_tagged_sector(line["tag"])
+    if sector == null && line["backsector"] != null {
+        door_open_sector(line["backsector"], VDOORSPEED, VDOORWAIT)
+        return
+    }
+    if sector != null {
+        door_open_sector(sector, VDOORSPEED, VDOORWAIT)
+    }
+}
+
+func door_open_stay(line) {
+    const sector = find_tagged_sector(line["tag"])
+    if sector == null && line["backsector"] != null {
+        door_open_sector(line["backsector"], VDOORSPEED, -1)
+        return
+    }
+    if sector != null {
+        door_open_sector(sector, VDOORSPEED, -1)
+    }
+}
+
+func door_open_blazing(line) {
+    const sector = find_tagged_sector(line["tag"])
+    if sector == null && line["backsector"] != null {
+        door_open_sector(line["backsector"], VDOORSPEED * 4, VDOORWAIT)
+        return
+    }
+    if sector != null {
+        door_open_sector(sector, VDOORSPEED * 4, VDOORWAIT)
+    }
+}
+
+func door_open_blazing_stay(line) {
+    const sector = find_tagged_sector(line["tag"])
+    if sector == null && line["backsector"] != null {
+        door_open_sector(line["backsector"], VDOORSPEED * 4, -1)
+        return
+    }
+    if sector != null {
+        door_open_sector(sector, VDOORSPEED * 4, -1)
+    }
+}
+
+func door_open_keyed(line, card1, card2) {
+    if !player_keys[card1] && !player_keys[card2] {
+        println("You need a key to open this door.")
+        return
+    }
+    door_open_standard(line)
+}
+
+func door_open_keyed_stay(line, card1, card2) {
+    if !player_keys[card1] && !player_keys[card2] {
+        println("You need a key to open this door.")
+        return
+    }
+    door_open_stay(line)
+}
+
+func door_close(line) {
+    const sector = find_tagged_sector(line["tag"])
+    if sector != null {
+        door_close_sector(sector, VDOORSPEED)
+    }
+}
+
+func door_close_wait_open(line) {
+    const sector = find_tagged_sector(line["tag"])
+    if sector != null {
+        door_thinkers.push({
+            "type": "door",
+            "sector": sector,
+            "direction": -1,
+            "speed": VDOORSPEED,
+            "topheight": sector["ceilingheight"],
+            "topcountdown": VDOORWAIT,
+            "phase": "closing"
+        })
+    }
+}
+
+func door_open_sector(sector, speed, wait_tics) {
+    let existing = null
+    for t in door_thinkers {
+        if t["sector"] == sector && t["type"] == "door" { existing = t }
+    }
+    if existing != null {
+        if existing["direction"] == -1 { existing["direction"] = 1; existing["phase"] = "opening" }
+        return
+    }
+    const top = find_lowest_ceiling_around(sector) - 4 * FRACUNIT
+    door_thinkers.push({
+        "type": "door",
+        "sector": sector,
+        "direction": 1,
+        "speed": speed,
+        "topheight": top,
+        "topcountdown": wait_tics,
+        "phase": "opening"
+    })
+}
+
+func door_close_sector(sector, speed) {
+    const floor = sector["floorheight"]
+    door_thinkers.push({
+        "type": "door",
+        "sector": sector,
+        "direction": -1,
+        "speed": speed,
+        "topheight": sector["ceilingheight"],
+        "topcountdown": 0,
+        "phase": "closing",
+        "bottomheight": floor
+    })
+}
+
+func plat_down_wait_up(line) {
+    const sector = find_tagged_sector(line["tag"])
+    if sector == null { return }
+    const low = find_lowest_floor_around(sector)
+    door_thinkers.push({
+        "type": "plat",
+        "sector": sector,
+        "speed": VDOORSPEED * 2,
+        "low": low,
+        "high": sector["floorheight"],
+        "wait": 105,
+        "count": 0,
+        "phase": "down"
+    })
+}
+
+func floor_lower_to_highest(line) {
+    const sector = find_tagged_sector(line["tag"])
+    if sector == null { return }
+    const target = find_highest_floor_around(sector)
+    door_thinkers.push({
+        "type": "floor",
+        "sector": sector,
+        "speed": FRACUNIT,
+        "target": target,
+        "direction": if target > sector["floorheight"] { 1 } else { -1 }
+    })
+}
+
+func floor_lower_to_lowest(line) {
+    const sector = find_tagged_sector(line["tag"])
+    if sector == null { return }
+    const target = find_lowest_floor_around(sector)
+    door_thinkers.push({
+        "type": "floor",
+        "sector": sector,
+        "speed": FRACUNIT,
+        "target": target,
+        "direction": -1
+    })
+}
+
+func teleport_thing(line) {
+    for thing in map_things {
+        if thing["type"] == 14 {
+            const dest_sector = find_tagged_sector(line["tag"])
+            if dest_sector != null {
+                player_x = thing["x"]
+                player_y = thing["y"]
+                player_z = player_floorz
+                player_momx = 0
+                player_momy = 0
+                player_angle = thing["angle"] * ANG45 / 45
+            }
+            return
+        }
+    }
+}
+
+func door_generic_special(line, special) {
+    
+}
+
+func doors_run_thinkers() {
+    let i = 0
+    while i < len(door_thinkers) {
+        const t = door_thinkers[i]
+        match t["type"] {
+            "door" => door_think(t, i),
+            "plat" => plat_think(t, i),
+            "floor" => floor_think(t, i),
+            _ => {}
+        }
+        i = i + 1
+    }
+}
+
+func door_think(t, idx) {
+    const sector = t["sector"]
+    if t["phase"] == "opening" {
+        sector["ceilingheight"] = sector["ceilingheight"] + t["speed"]
+        if sector["ceilingheight"] >= t["topheight"] {
+            sector["ceilingheight"] = t["topheight"]
+            if t["topcountdown"] > 0 {
+                t["phase"] = "waiting"
+                t["topcountdown"] = t["topcountdown"]
+            } else if t["topcountdown"] == -1 {
+                door_thinkers.splice(idx, 1)
+            }
+        }
+    } else if t["phase"] == "waiting" {
+        t["topcountdown"] = t["topcountdown"] - 1
+        if t["topcountdown"] <= 0 {
+            t["phase"] = "closing"
+        }
+    } else if t["phase"] == "closing" {
+        sector["ceilingheight"] = sector["ceilingheight"] - t["speed"]
+        if sector["ceilingheight"] <= sector["floorheight"] {
+            sector["ceilingheight"] = sector["floorheight"]
+            door_thinkers.splice(idx, 1)
+        }
+    }
+}
+
+func plat_think(t, idx) {
+    const sector = t["sector"]
+    if t["phase"] == "down" {
+        sector["floorheight"] = sector["floorheight"] - t["speed"]
+        if sector["floorheight"] <= t["low"] {
+            sector["floorheight"] = t["low"]
+            t["phase"] = "wait"
+            t["count"] = t["wait"]
+        }
+    } else if t["phase"] == "wait" {
+        t["count"] = t["count"] - 1
+        if t["count"] <= 0 { t["phase"] = "up" }
+    } else if t["phase"] == "up" {
+        sector["floorheight"] = sector["floorheight"] + t["speed"]
+        if sector["floorheight"] >= t["high"] {
+            sector["floorheight"] = t["high"]
+            door_thinkers.splice(idx, 1)
+        }
+    }
+}
+
+func floor_think(t, idx) {
+    const sector = t["sector"]
+    sector["floorheight"] = sector["floorheight"] + t["speed"] * t["direction"]
+    if (t["direction"] > 0 && sector["floorheight"] >= t["target"]) ||
+       (t["direction"] < 0 && sector["floorheight"] <= t["target"]) {
+        sector["floorheight"] = t["target"]
+        door_thinkers.splice(idx, 1)
+    }
+}
+
+func find_tagged_sector(tag) {
+    if tag == 0 { return null }
+    for sector in map_sectors {
+        if sector["tag"] == tag { return sector }
+    }
+    null
+}
+
+func find_lowest_ceiling_around(sector) {
+    let lowest = 32767 << FRACBITS
+    for line in map_linedefs {
+        if line["frontsector"] == sector && line["backsector"] != null {
+            if line["backsector"]["ceilingheight"] < lowest {
+                lowest = line["backsector"]["ceilingheight"]
+            }
+        }
+        if line["backsector"] == sector && line["frontsector"] != null {
+            if line["frontsector"]["ceilingheight"] < lowest {
+                lowest = line["frontsector"]["ceilingheight"]
+            }
+        }
+    }
+    lowest
+}
+
+func find_lowest_floor_around(sector) {
+    let lowest = sector["floorheight"]
+    for line in map_linedefs {
+        if line["frontsector"] == sector && line["backsector"] != null {
+            if line["backsector"]["floorheight"] < lowest { lowest = line["backsector"]["floorheight"] }
+        }
+        if line["backsector"] == sector && line["frontsector"] != null {
+            if line["frontsector"]["floorheight"] < lowest { lowest = line["frontsector"]["floorheight"] }
+        }
+    }
+    lowest
+}
+
+func find_highest_floor_around(sector) {
+    let highest = -32767 << FRACBITS
+    for line in map_linedefs {
+        if line["frontsector"] == sector && line["backsector"] != null {
+            if line["backsector"]["floorheight"] > highest { highest = line["backsector"]["floorheight"] }
+        }
+        if line["backsector"] == sector && line["frontsector"] != null {
+            if line["frontsector"]["floorheight"] > highest { highest = line["frontsector"]["floorheight"] }
+        }
+    }
+    highest
+}
+let snd_channels = []
+let snd_sfx_cache = {}
+let snd_stream = null
+let snd_music_playing = false
+const SND_SAMPLERATE = 11025
+const SND_MAXCHANNELS = 8
+
+func sound_init() {
+    snd_channels = []
+    let i = 0
+    while i < SND_MAXCHANNELS {
+        snd_channels.push({"active": false, "data": null, "pos": 0, "vol": 255, "pan": 128, "priority": 0})
+        i = i + 1
+    }
+    snd_stream = audio_stream_new(SND_SAMPLERATE)
+}
+
+func sound_shutdown() {
+    if snd_stream != null {
+        audio_drain(snd_stream)
+        audio_close(snd_stream)
+        snd_stream = null
+    }
+}
+
+func sound_play(name, x, y, priority) {
+    const sfx = sound_load(name)
+    if sfx == null { return }
+    const dist = point_to_dist(player_x, player_y, x, y)
+    if dist > 1200 * FRACUNIT { return }
+    const vol = 255 - fixed_to_int(dist) * 255 / 1200
+    if vol <= 0 { return }
+    const angle = point_to_angle_2(player_x, player_y, x, y)
+    let diff = angle - player_angle
+    while diff > ANG180 { diff = diff - ANG360 }
+    while diff < -ANG180 { diff = diff + ANG360 }
+    const pan = 128 + fixed_to_int(fixed_mul(diff / (ANG90 / 128), 128 << FRACBITS))
+    const clamped_pan = clamp(pan, 0, 255)
+    let best_chan = -1
+    let best_prio = priority + 1
+    let i = 0
+    while i < SND_MAXCHANNELS {
+        if !snd_channels[i]["active"] { best_chan = i; i = SND_MAXCHANNELS; continue }
+        if snd_channels[i]["priority"] < best_prio {
+            best_prio = snd_channels[i]["priority"]
+            best_chan = i
+        }
+        i = i + 1
+    }
+    if best_chan < 0 { return }
+    snd_channels[best_chan] = {
+        "active": true,
+        "data": sfx,
+        "pos": 0,
+        "vol": vol,
+        "pan": clamped_pan,
+        "priority": priority
+    }
+}
+
+func sound_play_global(name) {
+    sound_play(name, player_x, player_y, 200)
+}
+
+func sound_load(name) {
+    const uname = name.upper()
+    if snd_sfx_cache.has(uname) { return snd_sfx_cache[uname] }
+    const lump_name = "DS" + uname
+    const idx = wad_find(lump_name)
+    if idx < 0 { return null }
+    const data = wad_read(idx)
+    if len(data) < 8 { return null }
+    const format = read_u16(data, 0)
+    const samplerate = read_u16(data, 2)
+    const numsamples = read_i32(data, 4)
+    if format != 3 { return null }
+    let samples = []
+    let i = 0
+    while i < numsamples && (8 + i) < len(data) {
+        samples.push(data[8 + i])
+        i = i + 1
+    }
+    snd_sfx_cache[uname] = samples
+    samples
+}
+
+func sound_update() {
+    if snd_stream == null { return }
+    let mix_buf = []
+    const chunk_size = SND_SAMPLERATE / TICRATE
+    let s = 0
+    while s < chunk_size {
+        let left = 0
+        let right = 0
+        let c = 0
+        while c < SND_MAXCHANNELS {
+            const ch = snd_channels[c]
+            if ch["active"] && ch["data"] != null {
+                const pos = ch["pos"]
+                if pos < len(ch["data"]) {
+                    const sample = (ch["data"][pos] - 128) * ch["vol"] / 255
+                    const lpan = 255 - ch["pan"]
+                    const rpan = ch["pan"]
+                    left = left + sample * lpan / 255
+                    right = right + sample * rpan / 255
+                    ch["pos"] = pos + 1
+                } else {
+                    ch["active"] = false
+                }
+            }
+            c = c + 1
+        }
+        left = clamp(left, -128, 127)
+        right = clamp(right, -128, 127)
+        mix_buf.push(left * 256)
+        mix_buf.push(right * 256)
+        s = s + 1
+    }
+    if len(mix_buf) > 0 {
+        audio_write_samples(snd_stream, mix_buf)
+    }
+}
+
+func music_start(name) {
+    const lump_name = "D_" + name.upper()
+    const idx = wad_find(lump_name)
+    if idx < 0 { return }
+    snd_music_playing = true
+}
+
+func music_stop() {
+    snd_music_playing = false
+}
+
+const level_music = [
+    "E1M1", "E1M2", "E1M3", "E1M4", "E1M5", "E1M6", "E1M7", "E1M8", "E1M9"
+]
+
+func music_start_level(episode, mission) {
+    if episode == 1 && mission >= 1 && mission <= 9 {
+        music_start(level_music[mission - 1])
+    }
+}
+let hud_stbar_patch = null
+let hud_face_patches = {}
+let hud_num_patches = []
+let hud_arms_patches = []
+let hud_key_patches = []
+let hud_automap = false
+let hud_message = ""
+let hud_message_tics = 0
+
+func hud_init() {
+    hud_load_stbar()
+    hud_load_numbers()
+}
+
+func hud_load_stbar() {
+    const idx = wad_find("STBAR")
+    if idx >= 0 { hud_stbar_patch = texture_get_patch(idx) }
+}
+
+func hud_load_numbers() {
+    hud_num_patches = []
+    let i = 0
+    while i < 10 {
+        const name = f"STTNUM{i}"
+        const idx = wad_find(name)
+        if idx >= 0 { hud_num_patches.push(texture_get_patch(idx)) }
+        else { hud_num_patches.push(null) }
+        i = i + 1
+    }
+    const minus_idx = wad_find("STTMINUS")
+    if minus_idx >= 0 { hud_num_patches.push(texture_get_patch(minus_idx)) }
+}
+
+func hud_draw() {
+    hud_draw_stbar()
+    if hud_message_tics > 0 {
+        hud_draw_message()
+        hud_message_tics = hud_message_tics - 1
+    }
+}
+
+func hud_draw_stbar() {
+    if hud_stbar_patch != null {
+        hud_draw_patch_to_fb(0, ST_Y, hud_stbar_patch)
+    } else {
+        let x = 0
+        while x < SCREENWIDTH {
+            let y = ST_Y
+            while y < SCREENHEIGHT {
+                r_framebuffer[y * SCREENWIDTH + x] = 96
+                y = y + 1
+            }
+            x = x + 1
+        }
+    }
+    hud_draw_number(44, ST_Y + 3, player_ammo[weapon_info[player_readyweapon]["ammo"]], 3)
+    hud_draw_number(90, ST_Y + 3, player_health, 3)
+    hud_draw_percent(90 + 14 * 3, ST_Y + 3)
+    hud_draw_number(221, ST_Y + 3, player_armor, 3)
+    hud_draw_percent(221 + 14 * 3, ST_Y + 3)
+    hud_draw_keys()
+    hud_draw_face()
+}
+
+func hud_draw_number(x, y, value, digits) {
+    if value < 0 { value = 0 }
+    let num = value
+    let d = digits
+    let xp = x + (d - 1) * 14
+    while d > 0 {
+        const digit = num % 10
+        if digit < len(hud_num_patches) && hud_num_patches[digit] != null {
+            hud_draw_patch_to_fb(xp, y, hud_num_patches[digit])
+        }
+        num = num / 10
+        xp = xp - 14
+        d = d - 1
+    }
+}
+
+func hud_draw_percent(x, y) {
+    const pct_idx = wad_find("STTPRCNT")
+    if pct_idx >= 0 {
+        const patch = texture_get_patch(pct_idx)
+        if patch != null { hud_draw_patch_to_fb(x, y, patch) }
+    }
+}
+
+func hud_draw_keys() {
+    const key_x = 239
+    const key_names = ["STKEYS0", "STKEYS1", "STKEYS2", "STKEYS3", "STKEYS4", "STKEYS5"]
+    let i = 0
+    while i < NUMCARDS {
+        if player_keys[i] {
+            const kid = wad_find(key_names[i])
+            if kid >= 0 {
+                const p = texture_get_patch(kid)
+                if p != null { hud_draw_patch_to_fb(key_x, ST_Y + 3 + (i % 3) * 10, p) }
+            }
+        }
+        i = i + 1
+    }
+}
+
+func hud_draw_face() {
+    const health = player_health
+    let face_name = "STFST01"
+    if health > 80 { face_name = "STFST00" }
+    else if health > 60 { face_name = "STFST01" }
+    else if health > 40 { face_name = "STFST02" }
+    else if health > 20 { face_name = "STFST03" }
+    else { face_name = "STFST04" }
+    if player_damagecount > 0 { face_name = "STFOUCH0" }
+    if player_dead { face_name = "STFDEAD0" }
+    const fid = wad_find(face_name)
+    if fid >= 0 {
+        const p = texture_get_patch(fid)
+        if p != null { hud_draw_patch_to_fb(143, ST_Y + 1, p) }
+    }
+}
+
+func hud_draw_patch_to_fb(x, y, patch) {
+    if patch == null { return }
+    let col = 0
+    while col < patch["width"] {
+        const sx = x + col
+        if sx >= 0 && sx < SCREENWIDTH {
+            texture_draw_patch_column(patch, col, r_framebuffer, sx + y * SCREENWIDTH, SCREENHEIGHT - y, null)
+        }
+        col = col + 1
+    }
+}
+
+func hud_show_message(msg) {
+    hud_message = msg
+    hud_message_tics = TICRATE * 4
+}
+
+func hud_draw_message() {
+    let x = 0
+    let i = 0
+    while i < len(hud_message) {
+        const c = hud_message.char_at(i)
+        const code = to_byte(c)
+        if code >= 33 && code <= 95 {
+            const name = f"STCFN{code}"
+            const fid = wad_find(name)
+            if fid >= 0 {
+                const p = texture_get_patch(fid)
+                if p != null {
+                    hud_draw_patch_to_fb(x, 0, p)
+                    x = x + p["width"]
+                } else { x = x + 8 }
+            } else { x = x + 8 }
+        } else { x = x + 4 }
+        i = i + 1
+    }
+}
+
+func automap_toggle() {
+    hud_automap = !hud_automap
+}
+
+func automap_draw() {
+    if !hud_automap { return }
+    let i = 0
+    while i < SCREENWIDTH * VIEWHEIGHT {
+        r_framebuffer[i] = 0
+        i = i + 1
+    }
+    const scale = FRACUNIT / 4
+    const cx = VIEWWIDTH / 2
+    const cy = VIEWHEIGHT / 2
+    for line in map_linedefs {
+        const flags = line["flags"]
+        if (flags & ML_DONTDRAW) != 0 { continue }
+        const x1 = cx + fixed_to_int(fixed_mul(line["v1"]["x"] - player_x, scale))
+        const y1 = cy - fixed_to_int(fixed_mul(line["v1"]["y"] - player_y, scale))
+        const x2 = cx + fixed_to_int(fixed_mul(line["v2"]["x"] - player_x, scale))
+        const y2 = cy - fixed_to_int(fixed_mul(line["v2"]["y"] - player_y, scale))
+        let color = 96
+        if line["backsector"] == null { color = 176 }
+        else if line["frontsector"]["floorheight"] != line["backsector"]["floorheight"] { color = 64 }
+        else if line["frontsector"]["ceilingheight"] != line["backsector"]["ceilingheight"] { color = 231 }
+        else { color = 104 }
+        if (flags & ML_SECRET) != 0 { color = 176 }
+        automap_draw_line(x1, y1, x2, y2, color)
+    }
+    automap_draw_player_arrow(cx, cy)
+}
+
+func automap_draw_line(x1, y1, x2, y2, color) {
+    let dx = abs(x2 - x1)
+    let dy = abs(y2 - y1)
+    let sx = if x1 < x2 { 1 } else { -1 }
+    let sy = if y1 < y2 { 1 } else { -1 }
+    let err = dx - dy
+    let cx = x1
+    let cy = y1
+    let steps = 0
+    const max_steps = dx + dy + 1
+    while steps < max_steps {
+        if cx >= 0 && cx < SCREENWIDTH && cy >= 0 && cy < VIEWHEIGHT {
+            r_framebuffer[cy * SCREENWIDTH + cx] = color
+        }
+        if cx == x2 && cy == y2 { return }
+        const e2 = 2 * err
+        if e2 > -dy { err = err - dy; cx = cx + sx }
+        if e2 < dx { err = err + dx; cy = cy + sy }
+        steps = steps + 1
+    }
+}
+
+func automap_draw_player_arrow(cx, cy) {
+    const l = 8
+    const a = player_angle
+    const ca = fine_cosine(a)
+    const sa = fine_sine(a)
+    const fx = fixed_to_int(fixed_mul(l << FRACBITS, ca))
+    const fy = -fixed_to_int(fixed_mul(l << FRACBITS, sa))
+    automap_draw_line(cx, cy, cx + fx, cy + fy, 112)
+    automap_draw_line(cx, cy, cx - fy / 2, cy + fx / 2, 112)
+    automap_draw_line(cx, cy, cx + fy / 2, cy - fx / 2, 112)
+}
+
+func intermission_draw(ep, mi, kills, items, secrets, time_secs) {
+    render_clear_fb()
+    const y = 30
+    hud_draw_text(50, y, f"E{ep}M{mi} COMPLETE")
+    hud_draw_text(50, y + 20, f"KILLS:   {player_killcount}%")
+    hud_draw_text(50, y + 30, f"ITEMS:   {player_itemcount}%")
+    hud_draw_text(50, y + 40, f"SECRETS: {player_secretcount}%")
+    hud_draw_text(50, y + 60, f"TIME: {time_secs / 60}:{(time_secs % 60):02}")
+    hud_draw_text(50, y + 80, "PRESS ENTER TO CONTINUE")
+}
+
+func hud_draw_text(x, y, text) {
+    let xp = x
+    let i = 0
+    while i < len(text) {
+        const c = text.char_at(i)
+        const code = to_byte(c)
+        if code >= 33 && code <= 95 {
+            const name = f"STCFN{code}"
+            const fid = wad_find(name)
+            if fid >= 0 {
+                const p = texture_get_patch(fid)
+                if p != null {
+                    hud_draw_patch_to_fb(xp, y, p)
+                    xp = xp + p["width"]
+                } else { xp = xp + 8 }
+            } else { xp = xp + 8 }
+        } else { xp = xp + 4 }
+        i = i + 1
+    }
+}
+let mobjinfo_table = {}
+
+func tables_init() {
+    mobjinfo_table = {}
+    mobjinfo_register(1, "PLAY", 100, 0, MF_SOLID | MF_SHOOTABLE, 16 * FRACUNIT, 56 * FRACUNIT, 0, 255, 0, -1, -1, -1, -1, 8)
+    mobjinfo_register(3004, "POSS", 20, 0, MF_SOLID | MF_SHOOTABLE | MF_COUNTKILL, 20 * FRACUNIT, 56 * FRACUNIT, 8 * FRACUNIT, 200, 0, -1, 1, 2, 3, 8)
+    mobjinfo_register(9, "SPOS", 30, 0, MF_SOLID | MF_SHOOTABLE | MF_COUNTKILL, 20 * FRACUNIT, 56 * FRACUNIT, 8 * FRACUNIT, 170, 0, -1, 1, 2, 3, 8)
+    mobjinfo_register(3001, "TROO", 60, 0, MF_SOLID | MF_SHOOTABLE | MF_COUNTKILL, 20 * FRACUNIT, 56 * FRACUNIT, 8 * FRACUNIT, 200, 0, 4, 1, 2, 3, 8)
+    mobjinfo_register(3002, "SARG", 150, 0, MF_SOLID | MF_SHOOTABLE | MF_COUNTKILL, 30 * FRACUNIT, 56 * FRACUNIT, 10 * FRACUNIT, 180, 0, 4, -1, 2, 3, 8)
+    mobjinfo_register(3006, "BOSS", 1000, 0, MF_SOLID | MF_SHOOTABLE | MF_COUNTKILL, 24 * FRACUNIT, 64 * FRACUNIT, 8 * FRACUNIT, 50, 0, 4, 1, 2, 3, 8)
+    mobjinfo_register(3005, "HEAD", 400, 0, MF_SOLID | MF_SHOOTABLE | MF_FLOAT | MF_NOGRAVITY | MF_COUNTKILL, 31 * FRACUNIT, 56 * FRACUNIT, 10 * FRACUNIT, 128, 0, -1, 1, 2, 3, 8)
+    mobjinfo_register(3003, "BOSS", 500, 0, MF_SOLID | MF_SHOOTABLE | MF_COUNTKILL, 24 * FRACUNIT, 64 * FRACUNIT, 8 * FRACUNIT, 50, 0, 4, 1, 2, 3, 8)
+    mobjinfo_register(16, "CYBR", 4000, 0, MF_SOLID | MF_SHOOTABLE | MF_COUNTKILL, 40 * FRACUNIT, 110 * FRACUNIT, 16 * FRACUNIT, 0, 0, -1, 1, 2, 3, 8)
+    mobjinfo_register(7, "SPID", 3000, 0, MF_SOLID | MF_SHOOTABLE | MF_COUNTKILL, 128 * FRACUNIT, 100 * FRACUNIT, 12 * FRACUNIT, 0, 0, -1, 1, 2, 3, 8)
+    mobjinfo_register(3004 + 10000, "SKUL", 100, 0, MF_SOLID | MF_SHOOTABLE | MF_FLOAT | MF_NOGRAVITY | MF_COUNTKILL, 16 * FRACUNIT, 56 * FRACUNIT, 20 * FRACUNIT, 256, 0, 4, -1, 2, 3, 8)
+    mobjinfo_register(2007, "CLIP", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2008, "SHEL", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2010, "ROCK", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2047, "CELL", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2001, "SHOT", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2002, "MGUN", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2003, "LAUN", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2004, "PLAS", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2006, "BFUG", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2005, "CSAW", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2011, "STIM", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2012, "MEDI", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2014, "BON1", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2015, "BON2", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2018, "ARM1", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2019, "ARM2", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(5, "BKEY", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(6, "YKEY", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(13, "RKEY", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(40, "BSKU", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(39, "YSKU", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(38, "RSKU", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2035, "BAR1", 20, 0, MF_SOLID | MF_SHOOTABLE | MF_NOBLOOD, 10 * FRACUNIT, 42 * FRACUNIT, 0, 0, 0, -1, -1, 2, 3, 0)
+    mobjinfo_register(2028, "COLU", 0, 0, MF_SOLID, 16 * FRACUNIT, 48 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(30, "COL1", 0, 0, MF_SOLID, 16 * FRACUNIT, 48 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(31, "COL2", 0, 0, MF_SOLID, 16 * FRACUNIT, 48 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(32, "COL3", 0, 0, MF_SOLID, 16 * FRACUNIT, 48 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(33, "COL4", 0, 0, MF_SOLID, 16 * FRACUNIT, 48 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(34, "CAND", 0, 0, 0, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(44, "TBLU", 0, 0, MF_SOLID, 16 * FRACUNIT, 48 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(45, "TGRN", 0, 0, MF_SOLID, 16 * FRACUNIT, 48 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(46, "TRED", 0, 0, MF_SOLID, 16 * FRACUNIT, 48 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(47, "SMIT", 0, 0, MF_SOLID, 16 * FRACUNIT, 48 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(48, "ELEC", 0, 0, MF_SOLID, 16 * FRACUNIT, 128 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2013, "SOUL", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2022, "PINV", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2023, "PSTR", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2024, "PINS", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2025, "SUIT", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2026, "PMAP", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(2045, "PVIS", 0, 0, MF_SPECIAL | MF_COUNTITEM, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    mobjinfo_register(8, "BPAK", 0, 0, MF_SPECIAL, 20 * FRACUNIT, 16 * FRACUNIT, 0, 0, 0, -1, -1, -1, -1, 0)
+    game_states_init()
+}
+
+func mobjinfo_register(doomednum, sprite, health, reactiontime, flags, radius, height, speed, painchance, damage, meleestate, missilestate, deathstate, painstate, mass) {
+    mobjinfo_table[to_string(doomednum)] = {
+        "doomednum": doomednum,
+        "sprite": sprite,
+        "spawnhealth": health,
+        "reactiontime": reactiontime,
+        "flags": flags,
+        "radius": radius,
+        "height": height,
+        "speed": speed,
+        "painchance": painchance,
+        "damage": damage,
+        "meleestate": meleestate,
+        "missilestate": missilestate,
+        "deathstate": deathstate,
+        "painstate": painstate,
+        "mass": mass,
+        "spawnstate": 0,
+        "seestate": 1,
+        "xdeathstate": -1,
+        "raisestate": -1,
+        "seesound": "",
+        "attacksound": "",
+        "painsound": "",
+        "deathsound": "",
+        "activesound": ""
+    }
+}
+
+func mobjinfo_get(doomednum) {
+    const key = to_string(doomednum)
+    if mobjinfo_table.has(key) { return mobjinfo_table[key] }
+    null
+}
+
+func game_states_init() {
+    game_states = []
+    let i = 0
+    while i < 20 {
+        game_states.push({
+            "sprite": null,
+            "frame": 0,
+            "tics": -1,
+            "action": null,
+            "nextstate": -1
+        })
+        i = i + 1
+    }
+    game_states[0] = {"sprite": "PLAY", "frame": 0, "tics": -1, "action": null, "nextstate": 0}
+    game_states[1] = {"sprite": "PLAY", "frame": 0, "tics": 4, "action": a_look, "nextstate": 1}
+    game_states[2] = {"sprite": "PLAY", "frame": 0, "tics": 10, "action": a_chase, "nextstate": 2}
+    game_states[3] = {"sprite": "PLAY", "frame": 0, "tics": -1, "action": a_fall, "nextstate": -1}
+    game_states[4] = {"sprite": "PLAY", "frame": 0, "tics": 3, "action": null, "nextstate": 5}
+    game_states[5] = {"sprite": "PLAY", "frame": 1, "tics": 3, "action": null, "nextstate": 4}
+}
+
+func pickup_touch(mobj) {
+    if (mobj["flags"] & MF_SPECIAL) == 0 { return }
+    const dist = point_to_dist(player_x, player_y, mobj["x"], mobj["y"])
+    if dist > 32 * FRACUNIT { return }
+    const dtype = mobj["type"]
+    let picked = false
+    match dtype {
+        2007 => { picked = player_give_ammo(am_clip, 10) },
+        2008 => { picked = player_give_ammo(am_shell, 4) },
+        2010 => { picked = player_give_ammo(am_misl, 1) },
+        2047 => { picked = player_give_ammo(am_cell, 20) },
+        2001 => { picked = player_give_weapon(wp_shotgun); player_give_ammo(am_shell, 8) },
+        2002 => { picked = player_give_weapon(wp_chaingun); player_give_ammo(am_clip, 20) },
+        2003 => { picked = player_give_weapon(wp_missile); player_give_ammo(am_misl, 2) },
+        2004 => { picked = player_give_weapon(wp_plasma); player_give_ammo(am_cell, 40) },
+        2006 => { picked = player_give_weapon(wp_bfg); player_give_ammo(am_cell, 40) },
+        2005 => { picked = player_give_weapon(wp_chainsaw) },
+        2011 => { picked = player_give_health(10) },
+        2012 => { picked = player_give_health(25) },
+        2013 => { picked = player_give_health(100); player_health = 200 },
+        2014 => { player_health = player_health + 1; if player_health > 200 { player_health = 200 }; picked = true },
+        2015 => { player_armor = player_armor + 1; if player_armor > 200 { player_armor = 200 }; picked = true },
+        2018 => { picked = player_give_armor(1, 100) },
+        2019 => { picked = player_give_armor(2, 200) },
+        5 => { player_give_key(it_bluecard); picked = true },
+        6 => { player_give_key(it_yellowcard); picked = true },
+        13 => { player_give_key(it_redcard); picked = true },
+        40 => { player_give_key(it_blueskull); picked = true },
+        39 => { player_give_key(it_yellowskull); picked = true },
+        38 => { player_give_key(it_redskull); picked = true },
+        8 => { player_maxammo = [400, 100, 600, 100]; picked = true },
+        2022 => { player_powers[pw_invulnerability] = 30 * TICRATE; picked = true },
+        2023 => { player_powers[pw_strength] = 1; player_give_health(100); picked = true },
+        2024 => { player_powers[pw_invisibility] = 60 * TICRATE; picked = true },
+        2025 => { player_powers[pw_ironfeet] = 60 * TICRATE; picked = true },
+        2026 => { player_powers[pw_allmap] = 1; picked = true },
+        2045 => { player_powers[pw_infrared] = 120 * TICRATE; picked = true },
+        _ => {}
+    }
+    if picked {
+        if (mobj["flags"] & MF_COUNTITEM) != 0 { player_itemcount = player_itemcount + 1 }
+        mobj_remove(mobj)
+        player_bonuscount = 6
+    }
+}
+let game_state = GS_DEMOSCREEN
+let game_episode = 1
+let game_mission = 1
+let game_skill = sk_medium
+let game_tic = 0
+let game_running = true
+let game_window = null
+let game_level_time = 0
+
+let key_states = {}
+
+func main() {
+    println("DOOM - MAGI Engine")
+    println("Loading...")
+    math_init()
+    tables_init()
+    const wad_path = if len(process_args()) > 0 { process_args()[0] } else { "DOOM1.WAD" }
+    if !wad_open(wad_path) {
+        println("Failed to load WAD file. Usage: magi run doom/main.magi <path/to/DOOM1.WAD>")
+        return
+    }
+    texture_init()
+    render_init()
+    hud_init()
+    doors_init()
+    sound_init()
+    game_window = sdl_init("DOOM", WINDOWWIDTH, WINDOWHEIGHT)
+    if game_window == null {
+        println("ERROR: Failed to initialize SDL2 window")
+        return
+    }
+    println("DOOM ready.")
+    game_new(1, 1, sk_medium)
+    game_loop()
+    sound_shutdown()
+    sdl_destroy(game_window)
+}
+
+func game_new(episode, mission, skill) {
+    game_episode = episode
+    game_mission = mission
+    game_skill = skill
+    game_state = GS_LEVEL
+    game_level_time = 0
+    map_load(episode, mission)
+    things_spawn_map()
+    music_start_level(episode, mission)
+    println(f"Starting E{episode}M{mission}")
+}
+
+func game_loop() {
+    let last_tic_time = sdl_ticks(game_window)
+    let tic_accumulator = 0
+    const tic_ms = 1000 / TICRATE
+
+    while game_running {
+        const now = sdl_ticks(game_window)
+        tic_accumulator = tic_accumulator + (now - last_tic_time)
+        last_tic_time = now
+
+        game_process_events()
+
+        while tic_accumulator >= tic_ms {
+            game_ticker()
+            tic_accumulator = tic_accumulator - tic_ms
+            game_tic = game_tic + 1
+        }
+
+        game_render()
+        render_blit(game_window)
+        sdl_present(game_window)
+
+        const frame_time = sdl_ticks(game_window) - now
+        if frame_time < 16 { sdl_delay(16 - frame_time) }
+    }
+}
+
+func game_process_events() {
+    let event = sdl_poll_event(game_window)
+    while event != null {
+        const etype = event["type"]
+        if etype == EVT_QUIT { game_running = false }
+        if etype == EVT_KEYDOWN {
+            const sc = event["scancode"]
+            key_states[to_string(sc)] = true
+            game_key_down(sc)
+        }
+        if etype == EVT_KEYUP {
+            const sc = event["scancode"]
+            key_states[to_string(sc)] = false
+        }
+        event = sdl_poll_event(game_window)
+    }
+}
+
+func key_pressed(scancode) {
+    const k = to_string(scancode)
+    if key_states.has(k) { key_states[k] } else { false }
+}
+
+func game_key_down(sc) {
+    if sc == SC_ESCAPE {
+        game_running = false
+    }
+    if sc == SC_TAB {
+        automap_toggle()
+    }
+    if sc == SC_SPACE || sc == SC_E {
+        player_using = true
+    }
+    if sc >= SC_1 && sc <= SC_7 {
+        const wp = sc - SC_1
+        if wp < NUMWEAPONS && player_weapons[wp] {
+            player_pendingweapon = wp
+        }
+    }
+}
+
+func game_build_cmd() {
+    let cmd = {"forward": 0, "side": 0, "turn": 0, "run": false, "fire": false}
+    if key_pressed(SC_W) || key_pressed(SC_UP) { cmd["forward"] = 1 }
+    if key_pressed(SC_S) || key_pressed(SC_DOWN) { cmd["forward"] = -1 }
+    if key_pressed(SC_A) { cmd["side"] = -1 }
+    if key_pressed(SC_D) { cmd["side"] = 1 }
+    if key_pressed(SC_LEFT) { cmd["turn"] = ANG45 / 4 }
+    if key_pressed(SC_RIGHT) { cmd["turn"] = -(ANG45 / 4) }
+    if key_pressed(SC_LSHIFT) { cmd["run"] = true }
+    if key_pressed(SC_LCTRL) { cmd["fire"] = true }
+    cmd
+}
+
+func game_ticker() {
+    match game_state {
+        GS_LEVEL => {
+            const cmd = game_build_cmd()
+            player_attacking = cmd["fire"]
+            player_think(cmd)
+            things_run_thinkers()
+            doors_run_thinkers()
+            weapon_tick()
+            game_check_pickups()
+            game_check_linedef_triggers()
+            sound_update()
+            game_level_time = game_level_time + 1
+        },
+        GS_INTERMISSION => {
+            if key_pressed(SC_RETURN) || key_pressed(SC_SPACE) {
+                game_mission = game_mission + 1
+                if game_mission > 9 { game_mission = 1; game_episode = game_episode + 1 }
+                if game_episode > 3 { game_running = false }
+                else { game_new(game_episode, game_mission, game_skill) }
+            }
+        },
+        _ => {}
+    }
+}
+
+func game_render() {
+    match game_state {
+        GS_LEVEL => {
+            if hud_automap {
+                automap_draw()
+            } else {
+                render_player_view()
+                things_add_vissprites()
+                r_draw_vissprites()
+            }
+            hud_draw()
+        },
+        GS_INTERMISSION => {
+            intermission_draw(game_episode, game_mission - 1, player_killcount, player_itemcount, player_secretcount, game_level_time / TICRATE)
+        },
+        _ => {
+            render_clear_fb()
+        }
+    }
+}
+
+func game_check_pickups() {
+    for mobj in mobj_list {
+        if (mobj["flags"] & MF_SPECIAL) != 0 {
+            pickup_touch(mobj)
+        }
+    }
+}
+
+func game_check_linedef_triggers() {
+    let i = 0
+    while i < map_num_linedefs {
+        const line = map_linedefs[i]
+        if line["special"] == 0 { i = i + 1; continue }
+        const flags = line["flags"]
+        const side1 = point_on_side(player_x - player_momx, player_y - player_momy,
+                                     line["v1"]["x"], line["v1"]["y"], line["dx"], line["dy"])
+        const side2 = point_on_side(player_x, player_y,
+                                     line["v1"]["x"], line["v1"]["y"], line["dx"], line["dy"])
+        if side1 != side2 {
+            doors_walk_line(line)
+        }
+        i = i + 1
+    }
+}
+
+func game_level_complete() {
+    game_state = GS_INTERMISSION
+}
+
+main()

@@ -156,7 +156,7 @@ func a_pain(mobj) {
 }
 
 func a_fall(mobj) {
-    mobj["flags"] = mobj["flags"] & ~MF_SOLID
+    mobj["flags"] = mobj["flags"] & (MF_SOLID ^ -1)
 }
 
 func a_scream(mobj) {

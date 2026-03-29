@@ -148,7 +148,7 @@ func mobj_damage(target, inflictor, source, damage) {
 }
 
 func mobj_kill(target, source) {
-    target["flags"] = target["flags"] & ~(MF_SHOOTABLE | MF_FLOAT | MF_SKULLFLY)
+    target["flags"] = target["flags"] & ((MF_SHOOTABLE | MF_FLOAT | MF_SKULLFLY) ^ -1)
     target["flags"] = target["flags"] | MF_CORPSE
     target["height"] = target["height"] >> 2
     if (target["flags"] & MF_COUNTKILL) != 0 {
