@@ -2,12 +2,22 @@ let wad_data = []
 let wad_lumps = []
 let wad_numlumps = 0
 
+func wad_open_bytes(data) {
+    wad_data = data
+    if wad_data == null || len(wad_data) < 12 { return false }
+    return wad_parse()
+}
+
 func wad_open(path) {
     wad_data = fs_read_bytes(path)
     if wad_data == null || len(wad_data) < 12 {
         println(f"ERROR: Cannot read WAD file: {path}")
         return false
     }
+    return wad_parse()
+}
+
+func wad_parse() {
     const id = chr(wad_data[0]) + chr(wad_data[1]) + chr(wad_data[2]) + chr(wad_data[3])
     if id != "IWAD" && id != "PWAD" {
         println(f"ERROR: Not a WAD file (got {id})")
