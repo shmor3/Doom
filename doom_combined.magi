@@ -820,12 +820,12 @@ func map_get_subsector(x, y) {
 let tex_palette = []
 let tex_colormaps = []
 let tex_textures = []
-let tex_flats = {}
-let tex_patches = {}
+let tex_flats = {"__e": 0}
+let tex_patches = {"__e": 0}
 let tex_pnames = []
-let tex_texture_cache = {}
-let tex_flat_cache = {}
-let tex_sprite_lumps = {}
+let tex_texture_cache = {"__e": 0}
+let tex_flat_cache = {"__e": 0}
+let tex_sprite_lumps = {"__e": 0}
 
 func texture_init() {
     texture_load_palette()
@@ -6831,7 +6831,7 @@ func doors_tick_extras() {
     doors_update_scrolling_walls()
 }
 let snd_channels = []
-let snd_sfx_cache = {}
+let snd_sfx_cache = {"__e": 0}
 let snd_stream = null
 let snd_music_data = null
 let snd_music_playing = false
@@ -7203,7 +7203,7 @@ let hud_oldhealth = 0
 let menu_active = false
 let menu_current = "main"
 let menu_item = 0
-let menu_items = {}
+let menu_items = {"__e": 0}
 let menu_skull_tic = 0
 let menu_skull_frame = 0
 
@@ -7841,7 +7841,7 @@ const sprnames = [
     "PLS1", "PLS2"
 ]
 
-let mobjinfo_table = {}
+let mobjinfo_table = {"__e": 0}
 let game_states = []
 let game_random_idx = 0
 
@@ -7870,7 +7870,7 @@ func random_int(mx) {
 }
 
 func tables_init() {
-    mobjinfo_table = {}
+    mobjinfo_table = {"__e": 0}
     game_states = []
     init_all_states()
     init_all_mobjinfo()
@@ -8470,7 +8470,7 @@ let game_running = true
 let game_window = null
 let game_level_time = 0
 
-let key_states = {}
+let key_states = {"__e": 0}
 
 const EMBEDDED_WAD = embed("DOOM1.WAD")
 
@@ -8511,9 +8511,11 @@ func game_new(episode, mission, skill) {
     game_state = GS_LEVEL
     game_level_time = 0
     map_load(episode, mission)
+    println("  Spawning things...")
     things_spawn_map()
-    music_start_level(episode, mission)
+    println("  Things spawned.")
     println(f"Starting E{episode}M{mission}")
+    println("Entering game loop...")
 }
 
 func game_loop() {

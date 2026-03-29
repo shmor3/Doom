@@ -7,7 +7,7 @@ let game_running = true
 let game_window = null
 let game_level_time = 0
 
-let key_states = {}
+let key_states = {"__e": 0}
 
 const EMBEDDED_WAD = embed("DOOM1.WAD")
 
@@ -48,9 +48,11 @@ func game_new(episode, mission, skill) {
     game_state = GS_LEVEL
     game_level_time = 0
     map_load(episode, mission)
+    println("  Spawning things...")
     things_spawn_map()
-    music_start_level(episode, mission)
+    println("  Things spawned.")
     println(f"Starting E{episode}M{mission}")
+    println("Entering game loop...")
 }
 
 func game_loop() {

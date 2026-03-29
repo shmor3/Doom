@@ -1,12 +1,12 @@
 let tex_palette = []
 let tex_colormaps = []
 let tex_textures = []
-let tex_flats = {}
-let tex_patches = {}
+let tex_flats = {"__e": 0}
+let tex_patches = {"__e": 0}
 let tex_pnames = []
-let tex_texture_cache = {}
-let tex_flat_cache = {}
-let tex_sprite_lumps = {}
+let tex_texture_cache = {"__e": 0}
+let tex_flat_cache = {"__e": 0}
+let tex_sprite_lumps = {"__e": 0}
 
 func texture_init() {
     texture_load_palette()

@@ -9,7 +9,7 @@ let hud_oldhealth = 0
 let menu_active = false
 let menu_current = "main"
 let menu_item = 0
-let menu_items = {}
+let menu_items = {"__e": 0}
 let menu_skull_tic = 0
 let menu_skull_frame = 0
 

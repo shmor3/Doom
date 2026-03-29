@@ -1,5 +1,5 @@
 let snd_channels = []
-let snd_sfx_cache = {}
+let snd_sfx_cache = {"__e": 0}
 let snd_stream = null
 let snd_music_data = null
 let snd_music_playing = false

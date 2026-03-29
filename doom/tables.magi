@@ -167,7 +167,7 @@ const sprnames = [
     "PLS1", "PLS2"
 ]
 
-let mobjinfo_table = {}
+let mobjinfo_table = {"__e": 0}
 let game_states = []
 let game_random_idx = 0
 
@@ -196,7 +196,7 @@ func random_int(mx) {
 }
 
 func tables_init() {
-    mobjinfo_table = {}
+    mobjinfo_table = {"__e": 0}
     game_states = []
     init_all_states()
     init_all_mobjinfo()
