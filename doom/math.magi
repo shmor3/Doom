@@ -25,34 +25,52 @@ let finetangent = []
 let tantoangle = []
 
 func math_init() {
+    println("  building sine table...")
     finesine = []
-    finetangent = []
-    tantoangle = []
     const pi = 3.14159265358979323846
     let i = 0
     while i < 10240 {
         const angle = (i * 2.0 * pi) / 8192.0
         const s = sin(angle)
-        const val = floor(s * 65536.0 + 0.5)
-        finesine.push(val)
+        finesine.push(floor(s * 65536.0 + 0.5))
         i = i + 1
     }
     finecosine_offset = 2048
+    println("  building tangent table...")
+    finetangent = []
     i = 0
     while i < 4096 {
-        const angle = ((i - 1024) * pi) / 2048.0
-        const t = if cos(angle) == 0.0 { 0 } else { sin(angle) / cos(angle) }
-        const val = floor(t * 65536.0 + 0.5)
-        finetangent.push(val)
+        const idx = i - 1024
+        const angle = (idx * 1.0) * pi / 2048.0
+        let t = 0
+        if idx == 1024 || idx == -1024 {
+            t = 65536 * 65536
+        } else {
+            const s = sin(angle)
+            const c = cos(angle)
+            if c > 0.00001 {
+                t = floor(s / c * 65536.0)
+            } else if c < -0.00001 {
+                t = floor(s / c * 65536.0)
+            } else {
+                t = 65536 * 256
+            }
+        }
+        finetangent.push(t)
         i = i + 1
     }
+    println("  building angle table...")
+    tantoangle = []
     i = 0
     while i < 2049 {
-        const f = i * 65536.0 / 2048.0
-        const a = atan(f / 65536.0) * (ANG180 * 1.0) / pi
-        tantoangle.push(floor(a + 0.5))
+        const f = (i * 1.0) / 2048.0
+        const a = atan(f) * 2147483648.0 / pi
+        let v = floor(a)
+        if v < 0 { v = 0 - v }
+        tantoangle.push(v)
         i = i + 1
     }
+    println("  math tables ready")
 }
 
 func fine_sine(a) {

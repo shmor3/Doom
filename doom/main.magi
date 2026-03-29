@@ -14,10 +14,15 @@ const EMBEDDED_WAD = embed("DOOM1.WAD")
 func doom_main() {
     println("DOOM - MAGI Engine")
     println("Loading...")
+    println("math_init...")
     math_init()
+    println("tables_init...")
     tables_init()
-    println(f"WAD data: {len(EMBEDDED_WAD)} bytes")
-    if !wad_open_bytes(EMBEDDED_WAD) {
+    println("About to check WAD...")
+    const wad = EMBEDDED_WAD
+    println("Got WAD ref")
+    println(f"WAD data: {len(wad)} bytes")
+    if !wad_open_bytes(wad) {
         println("ERROR: Embedded WAD data is invalid")
         return
     }
