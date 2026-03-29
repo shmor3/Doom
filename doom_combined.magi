@@ -8458,6 +8458,7 @@ func doom_main() {
     println("Loading...")
     math_init()
     tables_init()
+    println(f"WAD data: {len(EMBEDDED_WAD)} bytes")
     if !wad_open_bytes(EMBEDDED_WAD) {
         println("ERROR: Embedded WAD data is invalid")
         return
