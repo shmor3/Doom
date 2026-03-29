@@ -342,12 +342,18 @@ const LIGHTBRIGHT = 2
 const NUMCOLORMAPS = 32
 let wad_data = []
 let wad_lumps = []
+let wad_lump_names = []
+let wad_lump_offsets = []
+let wad_lump_sizes = []
 let wad_numlumps = 0
 
 func wad_open_bytes(data) {
     wad_data = data
     if wad_data == null || len(wad_data) < 12 { return false }
-    return wad_parse()
+    println("calling wad_parse...")
+    const result = wad_parse()
+    println(f"wad_parse returned: {result}")
+    return result
 }
 
 func wad_open(path) {
@@ -368,6 +374,9 @@ func wad_parse() {
     wad_numlumps = read_i32(wad_data, 4)
     const infotableofs = read_i32(wad_data, 8)
     wad_lumps = []
+    wad_lump_names = []
+    wad_lump_offsets = []
+    wad_lump_sizes = []
     let i = 0
     while i < wad_numlumps {
         const ofs = infotableofs + i * 16
@@ -380,10 +389,13 @@ func wad_parse() {
             if c == 0 { j = 8 } else { name = name + chr(c) }
             j = j + 1
         }
-        wad_lumps.push({"name": name.upper(), "filepos": filepos, "size": size, "index": i})
+        wad_lump_names.push(name.upper())
+        wad_lump_offsets.push(filepos)
+        wad_lump_sizes.push(size)
         i = i + 1
     }
-    println(f"WAD loaded: {id}, {wad_numlumps} lumps")
+    println(f"WAD loaded: {id}, {wad_numlumps} lumps, {len(wad_lump_names)} names")
+    println("wad_parse returning...")
     true
 }
 
@@ -391,7 +403,7 @@ func wad_find(name) {
     const uname = name.upper()
     let i = wad_numlumps - 1
     while i >= 0 {
-        if wad_lumps[i]["name"] == uname { return i }
+        if wad_lump_names[i] == uname { return i }
         i = i - 1
     }
     -1
@@ -401,7 +413,7 @@ func wad_find_after(name, after) {
     const uname = name.upper()
     let i = after + 1
     while i < wad_numlumps {
-        if wad_lumps[i]["name"] == uname { return i }
+        if wad_lump_names[i] == uname { return i }
         i = i + 1
     }
     -1
@@ -409,26 +421,19 @@ func wad_find_after(name, after) {
 
 func wad_read(index) {
     if index < 0 || index >= wad_numlumps { return [] }
-    const lump = wad_lumps[index]
-    const start = lump["filepos"]
-    const sz = lump["size"]
-    let result = []
-    let i = 0
-    while i < sz {
-        result.push(wad_data[start + i])
-        i = i + 1
-    }
-    result
+    const start = wad_lump_offsets[index]
+    const sz = wad_lump_sizes[index]
+    __byte_slice(wad_data, start, sz)
 }
 
 func wad_lump_size(index) {
     if index < 0 || index >= wad_numlumps { return 0 }
-    wad_lumps[index]["size"]
+    wad_lump_sizes[index]
 }
 
 func wad_lump_name(index) {
     if index < 0 || index >= wad_numlumps { return "" }
-    wad_lumps[index]["name"]
+    wad_lump_names[index]
 }
 
 func read_i16(data, offset) {
@@ -839,9 +844,10 @@ func texture_load_palette() {
     let i = 0
     while i < 256 {
         const ofs = i * 3
-        tex_palette.push({"r": data[ofs], "g": data[ofs + 1], "b": data[ofs + 2]})
+        tex_palette.push([data[ofs], data[ofs + 1], data[ofs + 2]])
         i = i + 1
     }
+    println(f"  Palette: {len(tex_palette)} colors")
 }
 
 func texture_load_colormaps() {
@@ -851,38 +857,43 @@ func texture_load_colormaps() {
     tex_colormaps = []
     let m = 0
     while m < 34 {
-        let cmap = []
-        let i = 0
-        while i < 256 {
-            cmap.push(data[m * 256 + i])
-            i = i + 1
-        }
+        const cmap = __byte_slice(data, m * 256, 256)
         tex_colormaps.push(cmap)
         m = m + 1
     }
+    println(f"  Colormaps: {len(tex_colormaps)}")
 }
 
 func texture_load_pnames() {
     const idx = wad_find("PNAMES")
     if idx < 0 { println("ERROR: PNAMES not found"); return }
     const data = wad_read(idx)
+    println(f"  PNAMES lump: {len(data)} bytes")
     const count = read_i32(data, 0)
+    println(f"  PNAMES count: {count}")
     tex_pnames = []
     let i = 0
     while i < count {
         tex_pnames.push(read_string(data, 4 + i * 8, 8).upper())
+        if i % 50 == 0 { println(f"    pname {i}/{count}") }
         i = i + 1
     }
+    println(f"  Patches: {len(tex_pnames)}")
 }
 
 func texture_load_textures() {
     tex_textures = []
+    println("  Loading TEXTURE1/2...")
+    let tl_idx = 0
     const lump_names = ["TEXTURE1", "TEXTURE2"]
-    for lname in lump_names {
+    while tl_idx < len(lump_names) {
+        const lname = lump_names[tl_idx]
+        tl_idx = tl_idx + 1
         const idx = wad_find(lname)
-        if idx < 0 { continue }
+        if idx < 0 { println(f"    {lname}: not found"); continue }
         const data = wad_read(idx)
         const numtextures = read_i32(data, 0)
+        println(f"    {lname}: {numtextures} textures")
         let i = 0
         while i < numtextures {
             const offset = read_i32(data, 4 + i * 4)
@@ -894,19 +905,11 @@ func texture_load_textures() {
             let p = 0
             while p < patchcount {
                 const pofs = offset + 22 + p * 10
-                patches.push({
-                    "originx": read_i16(data, pofs),
-                    "originy": read_i16(data, pofs + 2),
-                    "patch": read_u16(data, pofs + 4)
-                })
+                patches.push([read_i16(data, pofs), read_i16(data, pofs + 2), read_u16(data, pofs + 4)])
                 p = p + 1
             }
-            tex_textures.push({
-                "name": name,
-                "width": width,
-                "height": height,
-                "patches": patches
-            })
+            // [name, width, height, patches]
+            tex_textures.push([name, width, height, patches])
             i = i + 1
         }
     }
@@ -944,7 +947,7 @@ func texture_find(name) {
     if uname == "-" || uname == "" { return null }
     let i = 0
     while i < len(tex_textures) {
-        if tex_textures[i]["name"] == uname { return tex_textures[i] }
+        if tex_textures[i][0] == uname { return tex_textures[i] }
         i = i + 1
     }
     null
@@ -955,7 +958,7 @@ func texture_find_index(name) {
     if uname == "-" || uname == "" { return -1 }
     let i = 0
     while i < len(tex_textures) {
-        if tex_textures[i]["name"] == uname { return i }
+        if tex_textures[i][0] == uname { return i }
         i = i + 1
     }
     -1
@@ -964,21 +967,21 @@ func texture_find_index(name) {
 func texture_get_column(texnum, col) {
     if texnum < 0 || texnum >= len(tex_textures) { return null }
     const tex = tex_textures[texnum]
-    const w = tex["width"]
-    const h = tex["height"]
+    const w = tex[1]
+    const h = tex[2]
     const actual_col = ((col % w) + w) % w
     const cache_key = f"{texnum}_{actual_col}"
     if tex_texture_cache.has(cache_key) { return tex_texture_cache[cache_key] }
     let column = []
     let i = 0
     while i < h { column.push(0); i = i + 1 }
-    for pdef in tex["patches"] {
-        const pname_idx = pdef["patch"]
+    for pdef in tex[3] {
+        const pname_idx = pdef[2]
         if pname_idx >= len(tex_pnames) { continue }
         const pname = tex_pnames[pname_idx]
         const lump_idx = wad_find(pname)
         if lump_idx < 0 { continue }
-        const pcol = actual_col - pdef["originx"]
+        const pcol = actual_col - pdef[0]
         if pcol < 0 { continue }
         const patch_data = wad_read(lump_idx)
         const patch_width = read_u16(patch_data, 0)
@@ -991,7 +994,7 @@ func texture_get_column(texnum, col) {
             const post_len = patch_data[post_ofs + 1]
             let j = 0
             while j < post_len {
-                const dest_y = topdelta + pdef["originy"] + j
+                const dest_y = topdelta + pdef[1] + j
                 if dest_y >= 0 && dest_y < h {
                     column[dest_y] = patch_data[post_ofs + 3 + j]
                 }
@@ -1054,7 +1057,7 @@ func texture_draw_patch_column(patch, col, dest, dest_ofs, dest_h, colormap) {
 }
 
 func palette_rgb(index) {
-    if index < 0 || index >= 256 { return {"r": 0, "g": 0, "b": 0} }
+    if index < 0 || index >= 256 { return [0, 0, 0] }
     tex_palette[index]
 }
 
@@ -1747,7 +1750,7 @@ func r_draw_seg(seg, x1, x2, rw_angle1) {
             if midtex >= 0 && wall_top <= wall_bot {
                 const tex_col = r_calc_texcol(seg, rw_angle, col_dist)
                 const tex = tex_textures[midtex]
-                const tex_h = tex["height"]
+                const tex_h = tex[2]
 
                 // Texture Y offset: unpegged = from ceiling, pegged = from floor
                 let tex_y_top = worldfront_ceiling + side_rowoffset
@@ -1790,7 +1793,7 @@ func r_draw_seg(seg, x1, x2, rw_angle1) {
                     if toptex >= 0 {
                         const tex_col = r_calc_texcol(seg, rw_angle, col_dist)
                         const tex = tex_textures[toptex]
-                        const tex_h = tex["height"]
+                        const tex_h = tex[2]
 
                         // Upper unpegged: draw from top of front ceiling
                         // Upper pegged: draw from bottom of upper texture
@@ -1824,7 +1827,7 @@ func r_draw_seg(seg, x1, x2, rw_angle1) {
                     if bottex >= 0 {
                         const tex_col = r_calc_texcol(seg, rw_angle, col_dist)
                         const tex = tex_textures[bottex]
-                        const tex_h = tex["height"]
+                        const tex_h = tex[2]
 
                         // Lower unpegged: draw from top of front ceiling
                         // Lower pegged: draw from back floor
@@ -1851,7 +1854,7 @@ func r_draw_seg(seg, x1, x2, rw_angle1) {
             // =====================================================
             if midtex >= 0 {
                 const tex = tex_textures[midtex]
-                const tex_h = tex["height"]
+                const tex_h = tex[2]
 
                 // Middle texture on two-sided line: clipped to opening
                 let mid_ceil = if worldback_ceiling < worldfront_ceiling {
@@ -2234,8 +2237,8 @@ func r_draw_sky_column(x, y1, y2) {
 
     if sky_texture >= len(tex_textures) { return }
     const tex = tex_textures[sky_texture]
-    const tex_w = tex["width"]
-    const tex_h = tex["height"]
+    const tex_w = tex[1]
+    const tex_h = tex[2]
     if tex_w <= 0 || tex_h <= 0 { return }
 
     // Sky column = (viewangle + xtoviewangle[x]) mapped to texture width
@@ -2746,7 +2749,7 @@ func render_blit(window) {
         while x < SCREENWIDTH {
             const px = r_framebuffer[y * SCREENWIDTH + x]
             const rgb = palette_rgb(px)
-            sdl_set_color(window, rgb["r"], rgb["g"], rgb["b"])
+            sdl_set_color(window, rgb[0], rgb[1], rgb[2])
             sdl_fill_rect(window, x * SCREENSCALE, y * SCREENSCALE, SCREENSCALE, SCREENSCALE)
             x = x + 1
         }
@@ -8483,23 +8486,21 @@ func doom_main() {
     println("Got WAD ref")
     println(f"WAD data: {len(wad)} bytes")
     if !wad_open_bytes(wad) {
-        println("ERROR: Embedded WAD data is invalid")
+        println("ERROR: WAD invalid")
         return
     }
     texture_init()
     render_init()
     hud_init()
     doors_init()
-    sound_init()
     game_window = sdl_init("DOOM", WINDOWWIDTH, WINDOWHEIGHT)
     if game_window == null {
-        println("ERROR: Failed to initialize SDL2 window")
+        println("ERROR: SDL2 init failed")
         return
     }
     println("DOOM ready.")
     game_new(1, 1, sk_medium)
     game_loop()
-    sound_shutdown()
     sdl_destroy(game_window)
 }
 

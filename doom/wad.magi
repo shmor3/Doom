@@ -1,11 +1,17 @@
 let wad_data = []
 let wad_lumps = []
+let wad_lump_names = []
+let wad_lump_offsets = []
+let wad_lump_sizes = []
 let wad_numlumps = 0
 
 func wad_open_bytes(data) {
     wad_data = data
     if wad_data == null || len(wad_data) < 12 { return false }
-    return wad_parse()
+    println("calling wad_parse...")
+    const result = wad_parse()
+    println(f"wad_parse returned: {result}")
+    return result
 }
 
 func wad_open(path) {
@@ -26,6 +32,9 @@ func wad_parse() {
     wad_numlumps = read_i32(wad_data, 4)
     const infotableofs = read_i32(wad_data, 8)
     wad_lumps = []
+    wad_lump_names = []
+    wad_lump_offsets = []
+    wad_lump_sizes = []
     let i = 0
     while i < wad_numlumps {
         const ofs = infotableofs + i * 16
@@ -38,10 +47,13 @@ func wad_parse() {
             if c == 0 { j = 8 } else { name = name + chr(c) }
             j = j + 1
         }
-        wad_lumps.push({"name": name.upper(), "filepos": filepos, "size": size, "index": i})
+        wad_lump_names.push(name.upper())
+        wad_lump_offsets.push(filepos)
+        wad_lump_sizes.push(size)
         i = i + 1
     }
-    println(f"WAD loaded: {id}, {wad_numlumps} lumps")
+    println(f"WAD loaded: {id}, {wad_numlumps} lumps, {len(wad_lump_names)} names")
+    println("wad_parse returning...")
     true
 }
 
@@ -49,7 +61,7 @@ func wad_find(name) {
     const uname = name.upper()
     let i = wad_numlumps - 1
     while i >= 0 {
-        if wad_lumps[i]["name"] == uname { return i }
+        if wad_lump_names[i] == uname { return i }
         i = i - 1
     }
     -1
@@ -59,7 +71,7 @@ func wad_find_after(name, after) {
     const uname = name.upper()
     let i = after + 1
     while i < wad_numlumps {
-        if wad_lumps[i]["name"] == uname { return i }
+        if wad_lump_names[i] == uname { return i }
         i = i + 1
     }
     -1
@@ -67,26 +79,19 @@ func wad_find_after(name, after) {
 
 func wad_read(index) {
     if index < 0 || index >= wad_numlumps { return [] }
-    const lump = wad_lumps[index]
-    const start = lump["filepos"]
-    const sz = lump["size"]
-    let result = []
-    let i = 0
-    while i < sz {
-        result.push(wad_data[start + i])
-        i = i + 1
-    }
-    result
+    const start = wad_lump_offsets[index]
+    const sz = wad_lump_sizes[index]
+    __byte_slice(wad_data, start, sz)
 }
 
 func wad_lump_size(index) {
     if index < 0 || index >= wad_numlumps { return 0 }
-    wad_lumps[index]["size"]
+    wad_lump_sizes[index]
 }
 
 func wad_lump_name(index) {
     if index < 0 || index >= wad_numlumps { return "" }
-    wad_lumps[index]["name"]
+    wad_lump_names[index]
 }
 
 func read_i16(data, offset) {

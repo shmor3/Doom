@@ -23,23 +23,21 @@ func doom_main() {
     println("Got WAD ref")
     println(f"WAD data: {len(wad)} bytes")
     if !wad_open_bytes(wad) {
-        println("ERROR: Embedded WAD data is invalid")
+        println("ERROR: WAD invalid")
         return
     }
     texture_init()
     render_init()
     hud_init()
     doors_init()
-    sound_init()
     game_window = sdl_init("DOOM", WINDOWWIDTH, WINDOWHEIGHT)
     if game_window == null {
-        println("ERROR: Failed to initialize SDL2 window")
+        println("ERROR: SDL2 init failed")
         return
     }
     println("DOOM ready.")
     game_new(1, 1, sk_medium)
     game_loop()
-    sound_shutdown()
     sdl_destroy(game_window)
 }
 
