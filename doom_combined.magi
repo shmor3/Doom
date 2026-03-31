@@ -25,7 +25,6 @@ let finetangent = []
 let tantoangle = []
 
 func math_init() {
-    println("  building sine table...")
     finesine = []
     const pi = 3.14159265358979323846
     let i = 0
@@ -36,30 +35,16 @@ func math_init() {
         i = i + 1
     }
     finecosine_offset = 2048
-    println("  building tangent table...")
+    // Build finetangent[0..4096]: matches original Doom's R_InitTables
+    // finetangent[i] = FRACUNIT * tan((i - FINEANGLES/4 + 0.5) / FINEANGLES * 2 * PI)
     finetangent = []
     i = 0
-    while i < 4096 {
-        const idx = i - 1024
-        const angle = (idx * 1.0) * pi / 2048.0
-        let t = 0
-        if idx == 1024 || idx == -1024 {
-            t = 65536 * 65536
-        } else {
-            const s = sin(angle)
-            const c = cos(angle)
-            if c > 0.00001 {
-                t = floor(s / c * 65536.0)
-            } else if c < -0.00001 {
-                t = floor(s / c * 65536.0)
-            } else {
-                t = 65536 * 256
-            }
-        }
+    while i < FINEANGLES / 2 {
+        const a = ((i - FINEANGLES / 4 + 0.5) * 1.0 / (FINEANGLES * 1.0)) * 2.0 * pi
+        const t = floor(65536.0 * (sin(a * 1.0) / cos(a * 1.0)) + 0.5)
         finetangent.push(t)
         i = i + 1
     }
-    println("  building angle table...")
     tantoangle = []
     i = 0
     while i < 2049 {
@@ -70,7 +55,6 @@ func math_init() {
         tantoangle.push(v)
         i = i + 1
     }
-    println("  math tables ready")
 }
 
 func fine_sine(a) {
@@ -350,10 +334,7 @@ let wad_numlumps = 0
 func wad_open_bytes(data) {
     wad_data = data
     if wad_data == null || len(wad_data) < 12 { return false }
-    println("calling wad_parse...")
-    const result = wad_parse()
-    println(f"wad_parse returned: {result}")
-    return result
+    return wad_parse()
 }
 
 func wad_open(path) {
@@ -394,8 +375,6 @@ func wad_parse() {
         wad_lump_sizes.push(size)
         i = i + 1
     }
-    println(f"WAD loaded: {id}, {wad_numlumps} lumps, {len(wad_lump_names)} names")
-    println("wad_parse returning...")
     true
 }
 
@@ -544,7 +523,6 @@ func map_load(episode, mission) {
     map_load_things(episode, mission)
     map_load_blockmap(episode, mission)
     map_load_reject(episode, mission)
-    println(f"Map E{episode}M{mission}: {map_num_vertexes} verts, {map_num_linedefs} lines, {map_num_sectors} sectors, {map_num_nodes} nodes, {map_num_things} things")
 }
 
 func map_load_vertexes(ep, mi) {
@@ -847,7 +825,6 @@ func texture_load_palette() {
         tex_palette.push([data[ofs], data[ofs + 1], data[ofs + 2]])
         i = i + 1
     }
-    println(f"  Palette: {len(tex_palette)} colors")
 }
 
 func texture_load_colormaps() {
@@ -861,39 +838,32 @@ func texture_load_colormaps() {
         tex_colormaps.push(cmap)
         m = m + 1
     }
-    println(f"  Colormaps: {len(tex_colormaps)}")
 }
 
 func texture_load_pnames() {
     const idx = wad_find("PNAMES")
     if idx < 0 { println("ERROR: PNAMES not found"); return }
     const data = wad_read(idx)
-    println(f"  PNAMES lump: {len(data)} bytes")
     const count = read_i32(data, 0)
-    println(f"  PNAMES count: {count}")
     tex_pnames = []
     let i = 0
     while i < count {
         tex_pnames.push(read_string(data, 4 + i * 8, 8).upper())
-        if i % 50 == 0 { println(f"    pname {i}/{count}") }
         i = i + 1
     }
-    println(f"  Patches: {len(tex_pnames)}")
 }
 
 func texture_load_textures() {
     tex_textures = []
-    println("  Loading TEXTURE1/2...")
     let tl_idx = 0
     const lump_names = ["TEXTURE1", "TEXTURE2"]
     while tl_idx < len(lump_names) {
         const lname = lump_names[tl_idx]
         tl_idx = tl_idx + 1
         const idx = wad_find(lname)
-        if idx < 0 { println(f"    {lname}: not found"); continue }
+        if idx < 0 { continue }
         const data = wad_read(idx)
         const numtextures = read_i32(data, 0)
-        println(f"    {lname}: {numtextures} textures")
         let i = 0
         while i < numtextures {
             const offset = read_i32(data, 4 + i * 4)
@@ -913,7 +883,6 @@ func texture_load_textures() {
             i = i + 1
         }
     }
-    println(f"Loaded {len(tex_textures)} textures")
 }
 
 func texture_index_flats() {
@@ -927,7 +896,6 @@ func texture_index_flats() {
         }
         i = i + 1
     }
-    println(f"Indexed {len(tex_flats)} flats")
 }
 
 func texture_index_sprites() {
@@ -939,7 +907,6 @@ func texture_index_sprites() {
         tex_sprite_lumps[name] = i
         i = i + 1
     }
-    println(f"Indexed {len(tex_sprite_lumps)} sprite lumps")
 }
 
 func texture_find(name) {
@@ -975,7 +942,11 @@ func texture_get_column(texnum, col) {
     let column = []
     let i = 0
     while i < h { column.push(0); i = i + 1 }
-    for pdef in tex[3] {
+    const patches = tex[3]
+    let pi = 0
+    while pi < len(patches) {
+        const pdef = patches[pi]
+        pi = pi + 1
         const pname_idx = pdef[2]
         if pname_idx >= len(tex_pnames) { continue }
         const pname = tex_pnames[pname_idx]
@@ -984,19 +955,25 @@ func texture_get_column(texnum, col) {
         const pcol = actual_col - pdef[0]
         if pcol < 0 { continue }
         const patch_data = wad_read(lump_idx)
+        if len(patch_data) < 12 { continue }
         const patch_width = read_u16(patch_data, 0)
         if pcol >= patch_width { continue }
+        if 8 + pcol * 4 + 3 >= len(patch_data) { continue }
         const col_ofs = read_i32(patch_data, 8 + pcol * 4)
+        if col_ofs < 0 || col_ofs >= len(patch_data) { continue }
         let post_ofs = col_ofs
-        while post_ofs < len(patch_data) {
+        while post_ofs >= 0 && post_ofs < len(patch_data) {
             const topdelta = patch_data[post_ofs]
             if topdelta == 255 { break }
+            if post_ofs + 1 >= len(patch_data) { break }
             const post_len = patch_data[post_ofs + 1]
             let j = 0
             while j < post_len {
+                const src_idx = post_ofs + 3 + j
+                if src_idx >= len(patch_data) { break }
                 const dest_y = topdelta + pdef[1] + j
                 if dest_y >= 0 && dest_y < h {
-                    column[dest_y] = patch_data[post_ofs + 3 + j]
+                    column[dest_y] = patch_data[src_idx]
                 }
                 j = j + 1
             }
@@ -1135,10 +1112,11 @@ func r_check_bbox(bbox) {
     true
 }
 
-let clipangle = ANG90
+let clipangle = ANG45
 
 func bsp_init() {
-    clipangle = point_to_angle_2(0, 0, VIEWWIDTH << FRACBITS, (VIEWWIDTH / 2) << FRACBITS)
+    // FOV is ~90 degrees, so half-FOV clipangle = ANG45
+    clipangle = ANG45
 }
 // ==========================================================================
 // render.magi -- Complete Doom software renderer
@@ -1161,9 +1139,9 @@ func bsp_init() {
 // Framebuffer: 320x200 palette-indexed pixels
 let r_framebuffer = []
 
-// Per-column occlusion tracking (solidsegs system)
-// 0 = open, 1 = fully occluded by a solid wall
-let r_occlusion = []
+// Solidsegs: sorted list of occluded column ranges [{first, last}, ...]
+// Starts with sentinels: {-MAX, -1} and {VIEWWIDTH, MAX}
+let r_solidsegs = []
 
 // Per-column clip bounds for sprite/two-sided line clipping
 // r_floorclip[x]   = lowest open row (exclusive) for this column
@@ -1184,9 +1162,11 @@ let r_centerx = 0
 let r_centery = 0
 let r_projection = 0
 
-// Angle-to-screen-column lookup table (r_main.c: viewangletox equivalent)
+// Angle-to-screen-column lookup tables
 // r_xtoviewangle[0..VIEWWIDTH] maps screen column to view-relative angle
+// r_viewangletox[0..FINEANGLES/2] maps fine angle to screen column
 let r_xtoviewangle = []
+let r_viewangletox = []
 
 // Per-column distance scale cache (computed during wall rendering)
 let r_screenheightarray = []
@@ -1286,8 +1266,7 @@ func render_init() {
     r_centery = VIEWHEIGHT / 2
     r_projection = r_centerx << FRACBITS
 
-    // Build xtoviewangle table (r_main.c: R_InitTextureMapping)
-    // Maps each screen column to the view-relative angle it represents
+    // Build xtoviewangle using atan (simpler, avoids tangent table dependency)
     r_xtoviewangle = []
     i = 0
     while i < VIEWWIDTH + 1 {
@@ -1295,6 +1274,33 @@ func render_init() {
         const pi = 3.14159265358979323846
         const a = floor(-f * (ANG180 * 1.0) / pi + 0.5)
         r_xtoviewangle.push(a)
+        i = i + 1
+    }
+
+    // Build viewangletox from finetangent (for R_AddLine angle→column conversion)
+    const focallength = r_centerx << FRACBITS
+    r_viewangletox = []
+    i = 0
+    while i < FINEANGLES / 2 {
+        const t_val = finetangent[i]
+        let t = 0
+        if t_val > 2 * FRACUNIT {
+            t = -1
+        } else if t_val < -(2 * FRACUNIT) {
+            t = VIEWWIDTH + 1
+        } else {
+            t = r_centerx - fixed_to_int(fixed_mul(t_val, focallength))
+            if t < -1 { t = -1 }
+            if t > VIEWWIDTH + 1 { t = VIEWWIDTH + 1 }
+        }
+        r_viewangletox.push(t)
+        i = i + 1
+    }
+    // Clamp fencepost
+    i = 0
+    while i < len(r_viewangletox) {
+        if r_viewangletox[i] == -1 { r_viewangletox[i] = 0 }
+        if r_viewangletox[i] == VIEWWIDTH + 1 { r_viewangletox[i] = VIEWWIDTH }
         i = i + 1
     }
 
@@ -1344,16 +1350,12 @@ func render_player_view() {
     r_viewcos = fine_cosine(r_viewangle)
     r_extralight = player_extralight
 
-    // R_ClearClipSegs: initialize the clip range list
-    // Start with a single open range spanning the full screen
-    r_clipsegs = []
-    r_clipsegs.push({"first": -2147483647, "last": -1})
-    r_clipsegs.push({"first": VIEWWIDTH, "last": 2147483647})
+    // R_ClearClipSegs: initialize solidsegs with sentinels
+    r_init_solidsegs()
 
     // Clear per-column state
     let i = 0
     while i < SCREENWIDTH {
-        r_occlusion[i] = 0
         r_floorclip[i] = VIEWHEIGHT
         r_ceilingclip[i] = -1
         r_wallscale[i] = 0
@@ -1381,11 +1383,38 @@ func render_player_view() {
     bsp_new_validcount()
     r_render_bsp_node(map_num_nodes - 1, r_render_subsector)
 
+    // Post-pass: fill uncovered floor/ceiling columns
+    // For each column, if there's open space above/below the wall, draw floor/ceiling
+    // using the first visible sector (player's current sector)
+    const player_ss = map_get_subsector(r_viewx, r_viewy)
+    let player_sector = null
+    if player_ss < map_num_subsectors {
+        player_sector = map_subsectors[player_ss]["sector"]
+    }
+    if player_sector != null {
+        let px = 0
+        while px < SCREENWIDTH {
+            const ceil_top = r_ceilingclip[px] + 1
+            const floor_bot = r_floorclip[px] - 1
+            // Draw ceiling for uncovered top area
+            if ceil_top < VIEWHEIGHT / 2 {
+                const sky = player_sector["ceilingpic"] == "F_SKY1"
+                r_draw_ceiling_plane(px, 0, ceil_top, player_sector, 0, 0, sky)
+            }
+            // Draw floor for uncovered bottom area
+            if floor_bot > VIEWHEIGHT / 2 {
+                r_draw_floor_plane(px, floor_bot, VIEWHEIGHT - 1, player_sector, 0, 0)
+            }
+            px = px + 1
+        }
+    }
+
     // R_DrawPlanes: render all visplanes (floors and ceilings)
     r_draw_all_visplanes()
 
     // R_DrawMasked: render sprites (deferred from BSP traversal)
     r_draw_vissprites()
+
 }
 
 // =========================================================================
@@ -1414,14 +1443,12 @@ func r_render_subsector(ssnum) {
     const sector = ss["sector"]
     if sector == null { return }
 
-    // Add sprites from this subsector to vissprite list
-    r_add_subsector_sprites(ssnum, sector)
-
-    // Process each seg in this subsector
     let i = 0
-    while i < ss["numlines"] {
-        const seg_idx = ss["firstline"] + i
-        if seg_idx < map_num_segs {
+    const numlines = ss["numlines"]
+    const firstline = ss["firstline"]
+    while i < numlines {
+        const seg_idx = firstline + i
+        if seg_idx >= 0 && seg_idx < map_num_segs {
             r_add_line(map_segs[seg_idx])
         }
         i = i + 1
@@ -1437,7 +1464,10 @@ func r_render_subsector(ssnum) {
 // =========================================================================
 
 func r_add_subsector_sprites(ssnum, sector) {
-    for mobj in mobj_list {
+    let ssi = 0
+    while ssi < len(mobj_list) {
+        const mobj = mobj_list[ssi]
+        ssi = ssi + 1
         if mobj["state"] == null { continue }
         if mobj["health"] <= 0 && (mobj["flags"] & MF_CORPSE) == 0 { continue }
         if mobj["subsector"] == ssnum || mobj["sector"] == sector {
@@ -1472,109 +1502,172 @@ func r_add_subsector_sprites(ssnum, sector) {
 // 5. Render the wall columns
 // =========================================================================
 
+// Saved rw_angle1 for R_StoreWallRange (set in r_add_line, used in r_draw_seg)
+let r_cur_rw_angle1 = 0
+let r_cur_seg = null
+
 func r_add_line(seg) {
     const v1 = seg["v1"]
     const v2 = seg["v2"]
 
-    // R_PointToAngle: compute angles from viewpoint to seg endpoints
-    const angle1 = r_point_to_angle(r_viewx, r_viewy, v1["x"], v1["y"]) - r_viewangle
-    const angle2 = r_point_to_angle(r_viewx, r_viewy, v2["x"], v2["y"]) - r_viewangle
+    // R_PointToAngle: compute WORLD angles from viewpoint to seg endpoints
+    let angle1 = r_point_to_angle(r_viewx, r_viewy, v1["x"], v1["y"])
+    let angle2 = r_point_to_angle(r_viewx, r_viewy, v2["x"], v2["y"])
 
-    // Compute the angular span of this seg
+    // Backface cull: span must be positive and < 180 degrees
     const span = angle1 - angle2
-
-    // Back-facing check: if span <= 0, the seg faces away from us
     if span <= 0 { return }
-
-    // If the span covers more than 180 degrees, it wraps around --
-    // this means we are behind the seg
     if span >= ANG180 { return }
 
-    // Clip against the field of view using clipangle
-    let rw_angle1 = angle1
+    // Save global angle before view-relative conversion
+    r_cur_rw_angle1 = angle1
+    r_cur_seg = seg
 
+    // Convert to view-relative
+    angle1 = angle1 - r_viewangle
+    angle2 = angle2 - r_viewangle
+
+    // Clip to FOV
     let tspan = angle1 + clipangle
     if tspan > 2 * clipangle {
         tspan = tspan - 2 * clipangle
-        // If the overshoot exceeds the span, the seg is entirely outside FOV
         if tspan >= span { return }
-        rw_angle1 = clipangle
+        angle1 = clipangle
     }
-
     tspan = clipangle - angle2
     if tspan > 2 * clipangle {
         tspan = tspan - 2 * clipangle
         if tspan >= span { return }
+        angle2 = 0 - clipangle
     }
 
-    // R_AngleToX: convert view-relative angles to screen columns
-    const x1 = r_angle_to_x(rw_angle1 + r_viewangle)
-    let x2 = r_angle_to_x(angle2 + r_viewangle)
+    // Convert clipped angles to screen columns using viewangletox
+    const a1idx = ((angle1 + ANG90) >> ANGLETOFINESHIFT) & (FINEANGLES / 2 - 1)
+    const a2idx = ((angle2 + ANG90) >> ANGLETOFINESHIFT) & (FINEANGLES / 2 - 1)
+    let x1 = if a1idx >= 0 && a1idx < len(r_viewangletox) { r_viewangletox[a1idx] } else { 0 }
+    let x2 = if a2idx >= 0 && a2idx < len(r_viewangletox) { r_viewangletox[a2idx] } else { VIEWWIDTH }
 
-    // Degenerate seg (zero-width on screen)
     if x1 == x2 { return }
-
-    // x2 is exclusive, convert to inclusive
     x2 = x2 - 1
 
-    // Off-screen rejection
-    if x1 >= VIEWWIDTH || x2 < 0 { return }
-
-    // Clamp to screen bounds
-    const clipped_x1 = if x1 < 0 { 0 } else { x1 }
-    const clipped_x2 = if x2 >= VIEWWIDTH { VIEWWIDTH - 1 } else { x2 }
-
-    // R_ClipSolidWallSegment / R_ClipPassWallSegment:
-    // Check if this range is entirely occluded by existing solid segs
-    let all_occluded = true
-    let chk = clipped_x1
-    while chk <= clipped_x2 {
-        if r_occlusion[chk] == 0 {
-            all_occluded = false
-            chk = clipped_x2 + 1
-        }
-        chk = chk + 1
-    }
-    if all_occluded { return }
-
-    // Determine if this is a solid or pass-through seg
-    const line = seg["linedef"]
+    // Determine solid vs pass-through
     const backsector = seg["backsector"]
     let is_solid = false
-
     if backsector == null {
-        // One-sided line: always solid
         is_solid = true
     } else {
         const frontsector = seg["frontsector"]
         if frontsector != null {
-            // Closed door check: back ceiling <= front floor
-            if backsector["ceilingheight"] <= frontsector["floorheight"] {
-                is_solid = true
-            }
-            // Closed from below: back floor >= front ceiling
-            if backsector["floorheight"] >= frontsector["ceilingheight"] {
-                is_solid = true
-            }
-            // Same-height window with no texture: not solid
-            if backsector["ceilingheight"] == frontsector["ceilingheight"] &&
-               backsector["floorheight"] == frontsector["floorheight"] {
-                is_solid = false
-            }
+            if backsector["ceilingheight"] <= frontsector["floorheight"] { is_solid = true }
+            if backsector["floorheight"] >= frontsector["ceilingheight"] { is_solid = true }
         }
     }
 
-    // Render the seg columns
-    r_draw_seg(seg, clipped_x1, clipped_x2, rw_angle1)
-
-    // Mark occluded columns for solid segs
+    // Dispatch to solidsegs clipper
     if is_solid {
-        let mx = clipped_x1
-        while mx <= clipped_x2 {
-            r_occlusion[mx] = 1
-            mx = mx + 1
+        r_clip_solid_wall(x1, x2)
+    } else {
+        r_clip_pass_wall(x1, x2)
+    }
+}
+
+// =========================================================================
+// R_ClipSolidWallSegment — clips and renders visible sub-ranges,
+// then merges the occluded range into solidsegs.
+// Uses parallel arrays for first/last (avoids map/splice overhead).
+// =========================================================================
+
+let r_ss_first = []
+let r_ss_last = []
+let r_ss_count = 0
+
+func r_init_solidsegs() {
+    r_ss_first = [-2147483647, VIEWWIDTH]
+    r_ss_last = [-1, 2147483647]
+    r_ss_count = 2
+}
+
+func r_clip_solid_wall(first, last) {
+    let si = 0
+    while si < r_ss_count && r_ss_last[si] < first - 1 { si = si + 1 }
+    if si >= r_ss_count { return }
+
+    if first < r_ss_first[si] {
+        if last < r_ss_first[si] - 1 {
+            // Entirely visible — render and insert new entry
+            r_draw_seg(r_cur_seg, first, last, r_cur_rw_angle1)
+            // Insert at si: shift everything right
+            r_ss_first.push(0)
+            r_ss_last.push(0)
+            let j = r_ss_count
+            while j > si { r_ss_first[j] = r_ss_first[j - 1]; r_ss_last[j] = r_ss_last[j - 1]; j = j - 1 }
+            r_ss_first[si] = first
+            r_ss_last[si] = last
+            r_ss_count = r_ss_count + 1
+            return
+        }
+        // Fragment above start
+        r_draw_seg(r_cur_seg, first, r_ss_first[si] - 1, r_cur_rw_angle1)
+        r_ss_first[si] = first
+    }
+
+    if last <= r_ss_last[si] { return }
+
+    let next = si
+    while next + 1 < r_ss_count && last >= r_ss_first[next + 1] - 1 {
+        r_draw_seg(r_cur_seg, r_ss_last[next] + 1, r_ss_first[next + 1] - 1, r_cur_rw_angle1)
+        next = next + 1
+        if last <= r_ss_last[next] {
+            r_ss_last[si] = r_ss_last[next]
+            // Remove entries si+1..next by shifting left
+            let rem = next - si
+            if rem > 0 {
+                let k = si + 1
+                while k + rem < r_ss_count { r_ss_first[k] = r_ss_first[k + rem]; r_ss_last[k] = r_ss_last[k + rem]; k = k + 1 }
+                r_ss_count = r_ss_count - rem
+            }
+            return
         }
     }
+
+    // Fragment after last
+    r_draw_seg(r_cur_seg, r_ss_last[next] + 1, last, r_cur_rw_angle1)
+    r_ss_last[si] = last
+
+    let rem2 = next - si
+    if rem2 > 0 {
+        let k = si + 1
+        while k + rem2 < r_ss_count { r_ss_first[k] = r_ss_first[k + rem2]; r_ss_last[k] = r_ss_last[k + rem2]; k = k + 1 }
+        r_ss_count = r_ss_count - rem2
+    }
+}
+
+// =========================================================================
+// R_ClipPassWallSegment — clips and renders visible sub-ranges,
+// does NOT modify solidsegs (two-sided lines don't occlude)
+// =========================================================================
+func r_clip_pass_wall(first, last) {
+    let si = 0
+    while si < r_ss_count && r_ss_last[si] < first - 1 { si = si + 1 }
+    if si >= r_ss_count { return }
+
+    if first < r_ss_first[si] {
+        if last < r_ss_first[si] - 1 {
+            r_draw_seg(r_cur_seg, first, last, r_cur_rw_angle1)
+            return
+        }
+        r_draw_seg(r_cur_seg, first, r_ss_first[si] - 1, r_cur_rw_angle1)
+    }
+
+    if last <= r_ss_last[si] { return }
+
+    while si + 1 < r_ss_count && last >= r_ss_first[si + 1] - 1 {
+        r_draw_seg(r_cur_seg, r_ss_last[si] + 1, r_ss_first[si + 1] - 1, r_cur_rw_angle1)
+        si = si + 1
+        if last <= r_ss_last[si] { return }
+    }
+
+    r_draw_seg(r_cur_seg, r_ss_last[si] + 1, last, r_cur_rw_angle1)
 }
 
 // =========================================================================
@@ -1627,13 +1720,28 @@ func r_draw_seg(seg, x1, x2, rw_angle1) {
     const v1 = seg["v1"]
 
     // ---------------------------------------------------------------
-    // R_StoreWallRange: compute perpendicular distance to seg
-    // Uses the dot product of (v1 - viewpos) with the view normal
+    // R_StoreWallRange: compute perpendicular distance to seg's LINE
+    // Uses: hyp = distance to v1, then project onto seg normal
+    // rw_distance = hyp * sin(distangle)
+    // where distangle = ANG90 - abs(normalangle - angle_to_v1)
     // ---------------------------------------------------------------
-    const dx = v1["x"] - r_viewx
-    const dy = v1["y"] - r_viewy
-    const rw_dist = abs(fixed_mul(dx, r_viewsin) - fixed_mul(dy, r_viewcos))
+    const seg_angle = seg["angle"]
+    const rw_normalangle = seg_angle + ANG90
+    const hyp = point_to_dist(r_viewx, r_viewy, v1["x"], v1["y"])
+    let offsetangle = abs(rw_normalangle - rw_angle1)
+    if offsetangle > ANG90 { offsetangle = ANG90 }
+    const distangle = ANG90 - offsetangle
+    const rw_dist = fixed_mul(hyp, fine_sine(distangle))
     if rw_dist <= 0 { return }
+
+    // Texture column offset (rw_offset = hyp * sin(offsetangle_from_normal))
+    let texoffsetangle = rw_normalangle - rw_angle1
+    if texoffsetangle > ANG180 { texoffsetangle = 0 - texoffsetangle }
+    if texoffsetangle > ANG90 { texoffsetangle = ANG90 }
+    let rw_offset = fixed_mul(hyp, fine_sine(texoffsetangle))
+    if rw_normalangle - rw_angle1 < ANG180 { rw_offset = 0 - rw_offset }
+    rw_offset = rw_offset + (if sidedef != null { sidedef["textureoffset"] } else { 0 }) + seg["offset"]
+    const rw_centerangle = ANG90 + r_viewangle - rw_normalangle
 
     // World-space heights relative to viewz
     const worldfront_floor = frontsector["floorheight"] - r_viewz
@@ -1687,38 +1795,31 @@ func r_draw_seg(seg, x1, x2, rw_angle1) {
     // ---------------------------------------------------------------
     // Per-column rendering loop
     // ---------------------------------------------------------------
+    // Compute scale at start and end columns using R_ScaleFromGlobalAngle
+    // Then linearly interpolate across the range (much faster)
+    // ---------------------------------------------------------------
+    const rw_scale1 = r_scale_from_global_angle(r_viewangle + r_xtoviewangle[x1], rw_normalangle, rw_dist)
+    let rw_scale = rw_scale1
+    let rw_scalestep = 0
+    if x2 > x1 {
+        const rw_scale2 = r_scale_from_global_angle(r_viewangle + r_xtoviewangle[x2], rw_normalangle, rw_dist)
+        rw_scalestep = (rw_scale2 - rw_scale1) / (x2 - x1)
+    }
+
     let x = x1
     while x <= x2 {
-        // Skip fully occluded columns
-        if r_occlusion[x] != 0 { x = x + 1; continue }
+        // Skip if clip bounds are invalid (fully occluded)
+        if r_ceilingclip[x] >= r_floorclip[x] { rw_scale = rw_scale + rw_scalestep; x = x + 1; continue }
 
-        // ---------------------------------------------------------
-        // Compute perspective distance for this column
-        // R_ScaleFromGlobalAngle equivalent
-        // ---------------------------------------------------------
-        const view_angle_delta = r_xtoviewangle[x]
-        const rw_angle = r_viewangle + view_angle_delta
-
-        // Distance to this column = rw_dist / cos(rw_angle - r_viewangle)
-        const cos_delta = fine_cosine((view_angle_delta) & (ANG360 - 1))
-        let col_dist = 0
-        if cos_delta != 0 {
-            col_dist = fixed_div(rw_dist, cos_delta)
-        } else {
-            col_dist = rw_dist
-        }
-        if col_dist <= 0 { x = x + 1; continue }
-
-        // ---------------------------------------------------------
-        // Scale factor: projection / distance
-        // This converts world units to screen pixels at this depth
-        // ---------------------------------------------------------
-        let scale = fixed_div(r_projection, col_dist >> 8)
-        if scale <= 0 { scale = 64 }
+        let scale = rw_scale
+        if scale <= 0 { scale = 256 }
         if scale > 256 * FRACUNIT { scale = 256 * FRACUNIT }
 
         // Cache the scale for sprite clipping
         r_wallscale[x] = scale
+
+        // Compute distance for this column (for lighting)
+        const col_dist = if scale > 0 { fixed_div(r_projection, scale) } else { rw_dist }
 
         // ---------------------------------------------------------
         // Compute colormap for diminished lighting
@@ -1738,6 +1839,10 @@ func r_draw_seg(seg, x1, x2, rw_angle1) {
         const ceil_clip = r_ceilingclip[x] + 1
         const floor_clip = r_floorclip[x] - 1
 
+        // Compute texture column using original Doom formula
+        const tcang = ((rw_centerangle + r_xtoviewangle[x]) >> ANGLETOFINESHIFT) & (FINEANGLES - 1)
+        const tex_col = fixed_to_int(rw_offset - fixed_mul(finetangent[tcang], rw_dist))
+
         // ---------------------------------------------------------
         // ONE-SIDED WALL: solid wall with middle texture
         // ---------------------------------------------------------
@@ -1747,26 +1852,25 @@ func r_draw_seg(seg, x1, x2, rw_angle1) {
             const wall_bot = if bot_y > floor_clip { floor_clip } else { bot_y }
 
             // Draw middle texture (or solid color fallback)
-            if midtex >= 0 && wall_top <= wall_bot {
-                const tex_col = r_calc_texcol(seg, rw_angle, col_dist)
+            if midtex >= 0 && midtex < len(tex_textures) && wall_top <= wall_bot {
                 const tex = tex_textures[midtex]
-                const tex_h = tex[2]
-
-                // Texture Y offset: unpegged = from ceiling, pegged = from floor
-                let tex_y_top = worldfront_ceiling + side_rowoffset
-                if dontpegbottom {
-                    tex_y_top = worldfront_floor + (tex_h << FRACBITS) + side_rowoffset
+                if tex != null {
+                    const tex_h = tex[2]
+                    let tex_y_top = worldfront_ceiling + side_rowoffset
+                    if dontpegbottom {
+                        tex_y_top = worldfront_floor + (tex_h << FRACBITS) + side_rowoffset
+                    }
+                    r_draw_wall_column(x, wall_top, wall_bot, midtex, tex_col, scale,
+                                       tex_y_top, tex_h, cmap, flags)
+                } else {
+                    r_draw_color_column(x, wall_top, wall_bot, 96, cmap)
                 }
-
-                r_draw_wall_column(x, wall_top, wall_bot, midtex, tex_col, scale,
-                                   tex_y_top, tex_h, cmap, flags)
             } else if wall_top <= wall_bot {
                 r_draw_color_column(x, wall_top, wall_bot, 96, cmap)
             }
 
             // Draw ceiling above the wall
             r_draw_ceiling_plane(x, ceil_clip, top_y - 1, frontsector, col_dist, cmap_idx, front_ceiling_sky)
-
             // Draw floor below the wall
             r_draw_floor_plane(x, bot_y + 1, floor_clip, frontsector, col_dist, cmap_idx)
 
@@ -1791,8 +1895,7 @@ func r_draw_seg(seg, x1, x2, rw_angle1) {
 
                 if wall_top <= wall_bot {
                     if toptex >= 0 {
-                        const tex_col = r_calc_texcol(seg, rw_angle, col_dist)
-                        const tex = tex_textures[toptex]
+                                const tex = tex_textures[toptex]
                         const tex_h = tex[2]
 
                         // Upper unpegged: draw from top of front ceiling
@@ -1825,8 +1928,7 @@ func r_draw_seg(seg, x1, x2, rw_angle1) {
 
                 if wall_top <= wall_bot {
                     if bottex >= 0 {
-                        const tex_col = r_calc_texcol(seg, rw_angle, col_dist)
-                        const tex = tex_textures[bottex]
+                                const tex = tex_textures[bottex]
                         const tex_h = tex[2]
 
                         // Lower unpegged: draw from top of front ceiling
@@ -1875,8 +1977,7 @@ func r_draw_seg(seg, x1, x2, rw_angle1) {
                 mid_bot = if mid_bot > floor_clip { floor_clip } else { mid_bot }
 
                 if mid_top <= mid_bot {
-                    const tex_col = r_calc_texcol(seg, rw_angle, col_dist)
-
+    
                     // Middle texture pegging: unpegged from ceiling, pegged from floor
                     let tex_y_top = mid_ceil + side_rowoffset
                     if dontpegbottom {
@@ -1892,10 +1993,7 @@ func r_draw_seg(seg, x1, x2, rw_angle1) {
             // Draw ceiling and floor spans for the open parts
             // =====================================================
 
-            // Ceiling: from top clip to front ceiling
             r_draw_ceiling_plane(x, ceil_clip, top_y - 1, frontsector, col_dist, cmap_idx, front_ceiling_sky)
-
-            // Floor: from front floor to bottom clip
             r_draw_floor_plane(x, bot_y + 1, floor_clip, frontsector, col_dist, cmap_idx)
 
             // If the opening is zero-height, mark as occluded
@@ -1905,9 +2003,20 @@ func r_draw_seg(seg, x1, x2, rw_angle1) {
             }
         }
 
+        rw_scale = rw_scale + rw_scalestep
         x = x + 1
     }
 }
+
+// =========================================================================
+// R_SEGS: R_ScaleFromGlobalAngle — compute wall scale at a given column angle
+//
+// scale = (projection * sin(angleb)) / (rw_distance * sin(anglea))
+// where anglea = ANG90 + (visangle - viewangle)      [view-relative]
+//       angleb = ANG90 + (visangle - rw_normalangle)  [wall-relative]
+// =========================================================================
+
+// r_scale_from_global_angle defined later in the file (single definition)
 
 // =========================================================================
 // R_SEGS: Calculate texture column for a wall seg
@@ -2003,7 +2112,8 @@ func r_draw_wall_column(x, y1, y2, texnum, texcol, scale, world_top, tex_h, cmap
             let px = column[ty]
             if cmap != null && px >= 0 && px < 256 { px = cmap[px] }
 
-            r_framebuffer[y * SCREENWIDTH + x] = px
+            const fb_idx = y * SCREENWIDTH + x
+            if fb_idx >= 0 && fb_idx < len(r_framebuffer) { r_framebuffer[fb_idx] = px }
         }
         texfrac = texfrac + texstep
         y = y + 1
@@ -2048,7 +2158,8 @@ func r_draw_masked_column(x, y1, y2, texnum, texcol, scale, world_top, tex_h, cm
             // Skip transparent pixels (index 0 for masked textures)
             if px != 0 {
                 if cmap != null && px >= 0 && px < 256 { px = cmap[px] }
-                r_framebuffer[y * SCREENWIDTH + x] = px
+                const fb_idx = y * SCREENWIDTH + x
+            if fb_idx >= 0 && fb_idx < len(r_framebuffer) { r_framebuffer[fb_idx] = px }
             }
         }
         texfrac = texfrac + texstep
@@ -2070,7 +2181,8 @@ func r_draw_color_column(x, y1, y2, color, cmap) {
     let y = y1
     while y <= y2 {
         if y >= 0 && y < VIEWHEIGHT && x >= 0 && x < SCREENWIDTH {
-            r_framebuffer[y * SCREENWIDTH + x] = px
+            const fb_idx = y * SCREENWIDTH + x
+            if fb_idx >= 0 && fb_idx < len(r_framebuffer) { r_framebuffer[fb_idx] = px }
         }
         y = y + 1
     }
@@ -2099,6 +2211,8 @@ func r_draw_ceiling_plane(x, y1, y2, sector, col_dist, cmap_idx, is_sky) {
         const flat = texture_get_flat(sector["ceilingpic"])
         if flat != null {
             r_draw_flat_column(x, cy1, cy2, flat, sector["ceilingheight"], cmap_idx, true)
+        } else {
+            r_draw_color_column(x, cy1, cy2, 40, get_colormap(cmap_idx))
         }
     }
 }
@@ -2121,6 +2235,8 @@ func r_draw_floor_plane(x, y1, y2, sector, col_dist, cmap_idx) {
     const flat = texture_get_flat(sector["floorpic"])
     if flat != null {
         r_draw_flat_column(x, fy1, fy2, flat, sector["floorheight"], cmap_idx, false)
+    } else {
+        r_draw_color_column(x, fy1, fy2, 120, get_colormap(cmap_idx))
     }
 }
 
@@ -2169,53 +2285,12 @@ func r_draw_flat_column(x, y1, y2, flat, plane_height, base_cmap_idx, is_ceiling
     if y1 > y2 { return }
     if flat == null { return }
     if len(flat) < 4096 { return }
-
-    let y = y1
-    while y <= y2 {
-        if y >= 0 && y < VIEWHEIGHT {
-            // Distance from the eye to this row of the flat
-            const dy = abs(y - r_centery)
-            if dy == 0 { y = y + 1; continue }
-
-            const plane_z = abs(plane_height - r_viewz)
-            if plane_z == 0 { y = y + 1; continue }
-
-            // R_PlaneDistance: distance = plane_height * projection / (y - centery)
-            // This gives the world-space distance to this horizontal line
-            const dist = fixed_div(fixed_mul(plane_z, r_projection >> 6), dy << (FRACBITS - 6))
-            if dist <= 0 { y = y + 1; continue }
-
-            // Diminished lighting: further floors/ceilings are darker
-            let flat_cmap_idx = base_cmap_idx + (fixed_to_int(dist) >> 6)
-            if flat_cmap_idx < 0 { flat_cmap_idx = 0 }
-            if flat_cmap_idx >= NUMCOLORMAPS { flat_cmap_idx = NUMCOLORMAPS - 1 }
-            const cmap = get_colormap(flat_cmap_idx)
-
-            // World-space coordinates of this pixel on the flat
-            // ds_xfrac = viewx + cos(viewangle) * distance
-            // ds_yfrac = viewy - sin(viewangle) * distance
-            const view_angle_delta = r_xtoviewangle[x]
-            const col_angle = r_viewangle + view_angle_delta
-
-            const map_x = r_viewx + fixed_mul(dist, fine_cosine(col_angle & (ANG360 - 1)))
-            const map_y = r_viewy - fixed_mul(dist, fine_sine(col_angle & (ANG360 - 1)))
-
-            // Map to 64x64 flat texture coordinates (flats always tile)
-            const tx = (((map_x >> FRACBITS) & 63) + 64) % 64
-            const ty = (((map_y >> FRACBITS) & 63) + 64) % 64
-
-            // Fetch texel and apply colormap
-            const flat_idx = ty * 64 + tx
-            let px = 0
-            if flat_idx >= 0 && flat_idx < 4096 {
-                px = flat[flat_idx]
-            }
-            if cmap != null && px >= 0 && px < 256 { px = cmap[px] }
-
-            r_framebuffer[y * SCREENWIDTH + x] = px
-        }
-        y = y + 1
-    }
+    let cmap_idx = base_cmap_idx
+    if cmap_idx < 0 { cmap_idx = 0 }
+    if cmap_idx >= NUMCOLORMAPS { cmap_idx = NUMCOLORMAPS - 1 }
+    const cmap = get_colormap(cmap_idx)
+    const va = r_xtoviewangle[x]
+    __render_flat_col(r_framebuffer, flat, x, y1, y2, r_viewx, r_viewy, r_viewz, r_viewangle, plane_height, r_projection, r_centery, cmap, va, finesine, finecosine_offset)
 }
 
 // =========================================================================
@@ -2263,7 +2338,10 @@ func r_draw_sky_column(x, y1, y2) {
         const clamped_ty = ((ty % col_h) + col_h) % col_h
 
         // Sky is drawn at full brightness (no colormap)
-        r_framebuffer[y * SCREENWIDTH + x] = column[clamped_ty]
+        const sky_fb_idx = y * SCREENWIDTH + x
+        if sky_fb_idx >= 0 && sky_fb_idx < len(r_framebuffer) && clamped_ty >= 0 && clamped_ty < len(column) {
+            r_framebuffer[sky_fb_idx] = column[clamped_ty]
+        }
         y = y + 1
     }
 }
@@ -2459,7 +2537,10 @@ func r_draw_vissprites() {
     r_sortedsprites = r_sort_vissprites()
 
     // Draw each sprite
-    for vs in r_sortedsprites {
+    let _dsi = 0
+    while _dsi < len(r_sortedsprites) {
+        const vs = r_sortedsprites[_dsi]
+        _dsi = _dsi + 1
         r_draw_sprite(vs)
     }
 }
@@ -2471,7 +2552,10 @@ func r_draw_vissprites() {
 func r_sort_vissprites() {
     // Copy to sortable array
     let sorted = []
-    for vs in r_vissprites {
+    let _svi = 0
+    while _svi < len(r_vissprites) {
+        const vs = r_vissprites[_svi]
+        _svi = _svi + 1
         sorted.push(vs)
     }
 
@@ -2743,18 +2827,7 @@ func r_sprite_rotation(thing) {
 // =========================================================================
 
 func render_blit(window) {
-    let y = 0
-    while y < SCREENHEIGHT {
-        let x = 0
-        while x < SCREENWIDTH {
-            const px = r_framebuffer[y * SCREENWIDTH + x]
-            const rgb = palette_rgb(px)
-            sdl_set_color(window, rgb[0], rgb[1], rgb[2])
-            sdl_fill_rect(window, x * SCREENSCALE, y * SCREENSCALE, SCREENSCALE, SCREENSCALE)
-            x = x + 1
-        }
-        y = y + 1
-    }
+    sdl_blit_fb(window, r_framebuffer, SCREENWIDTH, SCREENHEIGHT, tex_palette)
 }
 
 // =========================================================================
@@ -2783,7 +2856,8 @@ func r_draw_span(y, x1, x2, flat, ds_xfrac, ds_yfrac, ds_xstep, ds_ystep, cmap) 
             let px = flat[ty * 64 + tx]
             if cmap != null && px >= 0 && px < 256 { px = cmap[px] }
 
-            r_framebuffer[y * SCREENWIDTH + x] = px
+            const fb_idx = y * SCREENWIDTH + x
+            if fb_idx >= 0 && fb_idx < len(r_framebuffer) { r_framebuffer[fb_idx] = px }
         }
 
         xfrac = xfrac + ds_xstep
@@ -2866,7 +2940,7 @@ func r_scale_from_global_angle(visangle, rw_dist, rw_normalangle) {
     if scale > 256 * FRACUNIT { scale = 256 * FRACUNIT }
     if scale < 256 { scale = 256 }
 
-    scale
+    return scale
 }
 
 // Compute the perpendicular distance from the viewpoint to a seg
@@ -3292,6 +3366,422 @@ func r_reset_counters() {
     r_visplane_count = len(r_visplanes)
     r_vissprite_count = len(r_vissprites)
     r_seg_count = 0
+}
+// render2.magi — Doom renderer ported 1:1 from doom-rust-renderer
+// Float perspective projection, per-column boolean occlusion, per-pixel visplanes.
+// Wall rendering and visplane rendering done in native C for performance.
+
+// =====================================================================
+// Constants (matching doom-rust-renderer/constants.rs)
+// =====================================================================
+const PLAYER_EYE_HEIGHT = 41.0
+const ASPECT_RATIO = 200.0 / 240.0
+const GAME_SCREEN_W = SCREENWIDTH * 1.0 / ASPECT_RATIO
+const GAME_FOCUS_X = GAME_SCREEN_W / 2.0
+const CAM_FOCUS_X = SCREENWIDTH * 1.0 / 2.0
+const CAM_FOCUS_Y = SCREENHEIGHT * 1.0 / 2.0
+const FLAT_SIZE = 64
+
+// =====================================================================
+// State
+// =====================================================================
+let r2_fb = []
+let r2_hor_ocl = []
+let r2_floor_ocl = []
+let r2_ceil_ocl = []
+let r2_visplanes = []
+
+func r2_init() {
+    r2_fb = []
+    let i = 0
+    while i < SCREENWIDTH * SCREENHEIGHT { r2_fb.push(0); i = i + 1 }
+}
+
+func r2_clear() {
+    let i = 0
+    while i < SCREENWIDTH * SCREENHEIGHT { r2_fb[i] = 0; i = i + 1 }
+    r2_hor_ocl = []
+    r2_floor_ocl = []
+    r2_ceil_ocl = []
+    i = 0
+    while i < SCREENWIDTH {
+        r2_hor_ocl.push(0)
+        r2_floor_ocl.push(SCREENHEIGHT)
+        r2_ceil_ocl.push(-1)
+        i = i + 1
+    }
+    r2_visplanes = []
+}
+
+// =====================================================================
+// Geometry helpers
+// =====================================================================
+func r2_rotate(vx, vy, angle) {
+    const c = cos(angle)
+    const s = sin(angle)
+    [vx * c - vy * s, vx * s + vy * c]
+}
+
+func r2_line_length(x1, y1, x2, y2) {
+    sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1))
+}
+
+// =====================================================================
+// Viewport clipping (matching misc.rs clip_to_viewport)
+// Clips line against 45-degree FOV. Returns null or [sx,sy,ex,ey,start_offset]
+// =====================================================================
+func r2_clip(sx, sy, ex, ey) {
+    const s_left = sy > sx
+    const e_left = ey > ex
+    const s_right = sy < (0.0 - sx)
+    const e_right = ey < (0.0 - ex)
+    const s_in = sx > 0.0 && !s_left && !s_right
+    const e_in = ex > 0.0 && !e_left && !e_right
+
+    if s_in && e_in { return [sx, sy, ex, ey, 0.0] }
+
+    const dx = ex - sx
+    const dy = ey - sy
+
+    // Left clip line: y = x. Intersection: t = (sx - sy) / (dy - dx)
+    let li_t = -1.0
+    let li_x = 0.0
+    const ld = dy - dx
+    if ld != 0.0 {
+        li_t = (sx - sy) / ld
+        li_x = sx + li_t * dx
+    }
+    const l_hit = li_t >= 0.0 && li_t <= 1.0 && li_x >= 0.0
+
+    // Right clip line: y = -x. Intersection: t = -(sx + sy) / (dx + dy)
+    let ri_t = -1.0
+    let ri_x = 0.0
+    const rd = dx + dy
+    if rd != 0.0 {
+        ri_t = (0.0 - (sx + sy)) / rd
+        ri_x = sx + ri_t * dx
+    }
+    const r_hit = ri_t >= 0.0 && ri_t <= 1.0 && ri_x >= 0.0
+
+    if !s_in && !e_in && !l_hit && !r_hit { return null }
+    if !s_in && !e_in && l_hit != r_hit { return null }
+    if (r_hit && s_right && e_right) || (l_hit && s_left && e_left) { return null }
+
+    let nsx = sx
+    let nsy = sy
+    let nex = ex
+    let ney = ey
+    let start_offset = 0.0
+
+    if l_hit {
+        if s_left {
+            const osx = nsx
+            const osy = nsy
+            nsx = li_x
+            nsy = li_x
+            start_offset = sqrt((nsx - osx) * (nsx - osx) + (nsy - osy) * (nsy - osy))
+        }
+        if e_left { nex = li_x; ney = li_x }
+    }
+    if r_hit {
+        if s_right { nsx = ri_x; nsy = 0.0 - ri_x }
+        if e_right { nex = ri_x; ney = 0.0 - ri_x }
+    }
+
+    if nsx <= 0.0 && nex <= 0.0 { return null }
+    if nsx <= 0.01 { nsx = 0.01 }
+    if nex <= 0.01 { nex = 0.01 }
+
+    [nsx, nsy, nex, ney, start_offset]
+}
+
+// =====================================================================
+// Perspective projection (matching misc.rs)
+// =====================================================================
+func r2_project_x(wx, wy) {
+    if wx <= 0.01 { return CAM_FOCUS_X }
+    CAM_FOCUS_X - (GAME_FOCUS_X * wy / wx) * ASPECT_RATIO
+}
+
+func r2_project_y(wx, height) {
+    if wx <= 0.01 { return CAM_FOCUS_Y }
+    CAM_FOCUS_Y - GAME_FOCUS_X * height / wx
+}
+
+// =====================================================================
+// Process a single seg (matching segs.rs process_seg + process_sidedef)
+// =====================================================================
+func r2_process_seg(seg) {
+    const v1 = seg["v1"]
+    const v2 = seg["v2"]
+    const frontsector = seg["frontsector"]
+    const backsector = seg["backsector"]
+    const sidedef = seg["sidedef"]
+    if frontsector == null || sidedef == null { return }
+
+    const pi = 3.14159265358979323846
+    const pangle = player_angle * 1.0 / (ANG180 * 1.0) * pi
+
+    // Transform to player-relative view space
+    const wx1 = fixed_to_int(v1["x"] - player_x) * 1.0
+    const wy1 = fixed_to_int(v1["y"] - player_y) * 1.0
+    const wx2 = fixed_to_int(v2["x"] - player_x) * 1.0
+    const wy2 = fixed_to_int(v2["y"] - player_y) * 1.0
+    const r1 = r2_rotate(wx1, wy1, 0.0 - pangle)
+    const r2 = r2_rotate(wx2, wy2, 0.0 - pangle)
+
+    // Clip to viewport
+    const clipped = r2_clip(r1[0], r1[1], r2[0], r2[1])
+    if clipped == null { return }
+    const cx1 = clipped[0]
+    const cy1 = clipped[1]
+    const cx2 = clipped[2]
+    const cy2 = clipped[3]
+    const clip_offset = clipped[4]
+
+    // Project to screen
+    const scr_x1 = floor(r2_project_x(cx1, cy1))
+    const scr_x2 = floor(r2_project_x(cx2, cy2))
+    if scr_x1 >= scr_x2 { return }
+
+    // Heights relative to eye
+    const player_h = fixed_to_int(player_viewz) * 1.0
+    const floor_h = fixed_to_int(frontsector["floorheight"]) * 1.0 - player_h
+    const ceil_h = fixed_to_int(frontsector["ceilingheight"]) * 1.0 - player_h
+    const light = frontsector["lightlevel"]
+    const is_solid = backsector == null
+
+    // Texture info
+    const midtex_name = if sidedef != null { sidedef["midtexture"] } else { "-" }
+    const toptex_name = if sidedef != null { sidedef["toptexture"] } else { "-" }
+    const bottex_name = if sidedef != null { sidedef["bottomtexture"] } else { "-" }
+    const tex_xoff = if sidedef != null { fixed_to_int(sidedef["textureoffset"]) } else { 0 }
+    const tex_yoff = if sidedef != null { fixed_to_int(sidedef["rowoffset"]) } else { 0 }
+    const seg_offset = fixed_to_int(seg["offset"])
+
+    // Back sector heights for two-sided lines
+    let back_floor_h = floor_h
+    let back_ceil_h = ceil_h
+    let has_lower = false
+    let has_upper = false
+    if backsector != null {
+        back_floor_h = fixed_to_int(backsector["floorheight"]) * 1.0 - player_h
+        back_ceil_h = fixed_to_int(backsector["ceilingheight"]) * 1.0 - player_h
+        if back_floor_h > floor_h { has_lower = true }
+        if back_ceil_h < ceil_h { has_upper = true }
+    }
+
+    // Clipped line length for texture mapping
+    const seg_len = r2_line_length(cx1, cy1, cx2, cy2)
+    const x_range = scr_x2 - scr_x1
+    if x_range <= 0 { return }
+
+    // Per-column rendering
+    let ix = scr_x1
+    while ix < scr_x2 {
+        const x = floor(ix)
+        if x < 0 || x >= SCREENWIDTH { ix = ix + 1; continue }
+        if r2_hor_ocl[x] != 0 { ix = ix + 1; continue }
+
+        const t = (ix - scr_x1) / x_range
+        const depth = cx1 + t * (cx2 - cx1)
+        if depth <= 0.01 { ix = ix + 1; continue }
+
+        const bot_y = floor(r2_project_y(depth, floor_h))
+        const top_y = floor(r2_project_y(depth, ceil_h))
+        const fl_ocl = r2_floor_ocl[x]
+        const cl_ocl = r2_ceil_ocl[x]
+        const cb = if bot_y < fl_ocl { bot_y } else { fl_ocl }
+        const ct = if top_y > cl_ocl { top_y } else { cl_ocl }
+
+        if cb <= ct { ix = ix + 1; continue }
+
+        // Perspective-correct texture X
+        const uz0 = if cx1 > 0.01 { cx1 } else { 0.01 }
+        const uz1 = if cx2 > 0.01 { cx2 } else { 0.01 }
+        const inv0 = 1.0 / uz0
+        const inv1 = 1.0 / uz1
+        let raw_tx = floor(((1.0 - t) * 0.0 + t * seg_len * inv1) / ((1.0 - t) * inv0 + t * inv1))
+        raw_tx = raw_tx + clip_offset + tex_xoff + seg_offset
+        const z_col = floor(1.0 / ((1.0 - t) * inv0 + t * inv1))
+
+        if is_solid {
+            // Draw solid wall texture
+            r2_draw_tex_col(x, ct + 1, cb - 1, midtex_name, raw_tx, tex_yoff,
+                floor_h, ceil_h, depth, light, z_col)
+
+            // Add ceiling visplane
+            if ct > cl_ocl + 1 {
+                r2_add_visplane_col(x, cl_ocl + 1, ct, frontsector, true)
+            }
+            // Add floor visplane
+            if cb < fl_ocl - 1 {
+                r2_add_visplane_col(x, cb, fl_ocl - 1, frontsector, false)
+            }
+
+            r2_hor_ocl[x] = 1
+            r2_floor_ocl[x] = SCREENHEIGHT / 2
+            r2_ceil_ocl[x] = SCREENHEIGHT / 2
+        } else {
+            // Two-sided: ceiling visplane
+            if ct > cl_ocl + 1 {
+                r2_add_visplane_col(x, cl_ocl + 1, ct, frontsector, true)
+            }
+            // Floor visplane
+            if cb < fl_ocl - 1 {
+                r2_add_visplane_col(x, cb, fl_ocl - 1, frontsector, false)
+            }
+
+            if has_upper {
+                const bty = floor(r2_project_y(depth, back_ceil_h))
+                const wt = if ct + 1 > cl_ocl + 1 { ct + 1 } else { cl_ocl + 1 }
+                const wb = if bty < fl_ocl { bty } else { fl_ocl }
+                if wt <= wb {
+                    r2_draw_tex_col(x, wt, wb, toptex_name, raw_tx, tex_yoff,
+                        back_ceil_h, ceil_h, depth, light, z_col)
+                }
+                if bty > r2_ceil_ocl[x] { r2_ceil_ocl[x] = bty }
+            }
+            if has_lower {
+                const bby = floor(r2_project_y(depth, back_floor_h))
+                const wt2 = if bby > cl_ocl { bby } else { cl_ocl }
+                const wb2 = if cb - 1 < fl_ocl - 1 { cb - 1 } else { fl_ocl - 1 }
+                if wt2 <= wb2 {
+                    r2_draw_tex_col(x, wt2, wb2, bottex_name, raw_tx, tex_yoff,
+                        floor_h, back_floor_h, depth, light, z_col)
+                }
+                if bby < r2_floor_ocl[x] { r2_floor_ocl[x] = bby }
+            }
+        }
+        ix = ix + 1
+    }
+}
+
+// =====================================================================
+// Draw a textured wall column
+// =====================================================================
+func r2_draw_tex_col(x, y1, y2, tex_name, raw_tx, offset_y, bot_h, top_h, depth, light, z_col) {
+    if y1 > y2 { return }
+    if tex_name == "-" || tex_name == "" { return }
+
+    const tex_idx = texture_find_index(tex_name)
+    if tex_idx < 0 || tex_idx >= len(tex_textures) { return }
+    const tex = tex_textures[tex_idx]
+    if tex == null { return }
+    const tw = tex[1]
+    const th = tex[2]
+    if tw <= 0 || th <= 0 { return }
+
+    let tx = floor(raw_tx)
+    if tx < 0 { tx = tx + tw * (1 - tx / tw) }
+    tx = tx % tw
+
+    const column = texture_get_column(tex_idx, tx)
+    if column == null { return }
+    const col_h = len(column)
+    if col_h == 0 { return }
+
+    // Screen-space top and bottom of the full wall
+    const scr_top = r2_project_y(depth, top_h)
+    const scr_bot = r2_project_y(depth, bot_h)
+    if scr_bot <= scr_top { return }
+
+    // Light diminishing
+    const dim = 1.0 / (16.0 * 256.0)
+    let factor = light * 1.0 / 255.0 - z_col * dim
+    if factor < 0.0 { factor = 0.0 }
+    if factor > 1.0 { factor = 1.0 }
+    let cmap_idx = floor((1.0 - factor) * (NUMCOLORMAPS - 1))
+    if cmap_idx < 0 { cmap_idx = 0 }
+    if cmap_idx >= NUMCOLORMAPS { cmap_idx = NUMCOLORMAPS - 1 }
+    const cmap = get_colormap(cmap_idx)
+
+    // Render column using native C for speed
+    __render_wall_col(r2_fb, column, x, y1, y2, col_h, scr_top, scr_bot - scr_top, th, cmap)
+}
+
+// =====================================================================
+// Add a visplane column entry
+// =====================================================================
+func r2_add_visplane_col(x, y1, y2, sector, is_ceiling) {
+    const pic_name = if is_ceiling { sector["ceilingpic"] } else { sector["floorpic"] }
+    const height = if is_ceiling { sector["ceilingheight"] } else { sector["floorheight"] }
+    const light = sector["lightlevel"]
+    let cmap_idx = 32 - light / 8
+    if cmap_idx < 0 { cmap_idx = 0 }
+    if cmap_idx >= NUMCOLORMAPS { cmap_idx = NUMCOLORMAPS - 1 }
+    const cmap = get_colormap(cmap_idx)
+    const flat = texture_get_flat(pic_name)
+    if flat != null {
+        // New API: fb, flat, x, y1, y2, player_x, player_y, player_floor_h, player_angle_bam, plane_height, light_level, cmap
+        const player_ss = map_get_subsector(player_x, player_y)
+        let pf_h = 0
+        if player_ss < map_num_subsectors {
+            const ps = map_subsectors[player_ss]["sector"]
+            if ps != null { pf_h = ps["floorheight"] }
+        }
+        __render_flat_col(r2_fb, flat, x, y1, y2, player_x, player_y, pf_h, player_angle, height, light, cmap)
+    }
+}
+
+// =====================================================================
+// Subsector callback
+// =====================================================================
+func r2_render_subsector(ssnum) {
+    if ssnum < 0 || ssnum >= map_num_subsectors { return }
+    const ss = map_subsectors[ssnum]
+    if ss["sector"] == null { return }
+    let i = 0
+    const n = ss["numlines"]
+    const f = ss["firstline"]
+    while i < n {
+        const si = f + i
+        if si >= 0 && si < map_num_segs { r2_process_seg(map_segs[si]) }
+        i = i + 1
+    }
+}
+
+// =====================================================================
+// Entry point
+// =====================================================================
+func r2_render_player_view() {
+    r2_clear()
+    r_viewx = player_x
+    r_viewy = player_y
+    r_viewz = player_viewz
+    r_viewangle = player_angle
+    r_viewsin = fine_sine(r_viewangle)
+    r_viewcos = fine_cosine(r_viewangle)
+    bsp_new_validcount()
+    r_render_bsp_node(map_num_nodes - 1, r2_render_subsector)
+
+    // Fill ALL uncovered pixels with floor/ceiling from player's sector
+    const player_ss = map_get_subsector(r_viewx, r_viewy)
+    let player_sector = null
+    if player_ss < map_num_subsectors {
+        player_sector = map_subsectors[player_ss]["sector"]
+    }
+    if player_sector != null {
+        let px = 0
+        while px < SCREENWIDTH {
+            // For every column, fill any remaining gap with ceiling/floor
+            const cl = r2_ceil_ocl[px]
+            const fl = r2_floor_ocl[px]
+            // Ceiling: from row 0 down to where ceiling clip ends
+            // If cl == -1 (untouched), ceiling goes from 0 to SCREENHEIGHT/2
+            const ceil_bottom = if cl > 0 { cl } else { SCREENHEIGHT / 2 - 1 }
+            if ceil_bottom >= 0 {
+                r2_add_visplane_col(px, 0, ceil_bottom, player_sector, true)
+            }
+            // Floor: from where floor clip starts down to SCREENHEIGHT
+            // If fl == SCREENHEIGHT (untouched), floor goes from SCREENHEIGHT/2 to end
+            const floor_top = if fl < SCREENHEIGHT { fl } else { SCREENHEIGHT / 2 }
+            if floor_top < SCREENHEIGHT {
+                r2_add_visplane_col(px, floor_top, SCREENHEIGHT - 1, player_sector, false)
+            }
+            px = px + 1
+        }
+    }
 }
 let player_x = 0
 let player_y = 0
@@ -3720,9 +4210,12 @@ func things_spawn_map() {
     mobj_list = []
     mobj_id_counter = 0
     let player_thing = null
-    for thing in map_things {
+    let thing_idx = 0
+    while thing_idx < len(map_things) {
+        const thing = map_things[thing_idx]
         const ttype = thing["type"]
         const opts = thing["options"]
+        thing_idx = thing_idx + 1
         if (opts & MTF_NORMAL) == 0 && ttype != 1 && ttype != 11 { continue }
         if ttype == 1 {
             player_thing = thing
@@ -3741,7 +4234,6 @@ func things_spawn_map() {
     } else {
         player_spawn(0, 0, 0)
     }
-    println(f"Spawned {len(mobj_list)} things, player at ({fixed_to_int(player_x)}, {fixed_to_int(player_y)})")
 }
 
 func things_run_thinkers() {
@@ -3756,7 +4248,10 @@ func things_run_thinkers() {
 }
 
 func things_add_vissprites() {
-    for mobj in mobj_list {
+    let vi = 0
+    while vi < len(mobj_list) {
+        const mobj = mobj_list[vi]
+        vi = vi + 1
         if mobj["state"] == null { continue }
         if mobj["health"] <= 0 && (mobj["flags"] & MF_CORPSE) == 0 { continue }
         const dx = mobj["x"] - r_viewx
@@ -3768,31 +4263,7 @@ func things_add_vissprites() {
     }
 }
 
-let game_states = []
-let game_random_idx = 0
-const random_table = [
-    0, 8, 109, 220, 222, 241, 149, 107, 75, 248, 254, 140, 16, 66, 74, 21,
-    211, 47, 80, 242, 154, 27, 205, 128, 161, 89, 77, 36, 95, 110, 85, 48,
-    212, 140, 211, 249, 22, 79, 200, 50, 28, 188, 52, 140, 202, 120, 68, 145,
-    62, 70, 184, 190, 91, 197, 152, 224, 149, 104, 25, 178, 252, 182, 202, 182,
-    141, 197, 4, 81, 181, 242, 145, 42, 39, 227, 156, 198, 225, 193, 219, 93,
-    122, 175, 249, 0, 175, 143, 70, 239, 46, 246, 163, 53, 163, 109, 168, 135,
-    2, 235, 25, 92, 20, 145, 138, 77, 69, 166, 78, 176, 173, 212, 166, 113,
-    94, 161, 41, 50, 239, 49, 111, 164, 70, 60, 2, 37, 171, 75, 136, 156,
-    11, 56, 42, 146, 138, 229, 73, 146, 77, 61, 98, 196, 135, 106, 63, 197,
-    195, 86, 96, 203, 113, 101, 170, 247, 181, 113, 80, 250, 108, 7, 255, 237,
-    129, 226, 79, 107, 112, 166, 103, 241, 24, 223, 239, 120, 198, 58, 60, 82,
-    128, 3, 184, 66, 143, 224, 145, 224, 81, 206, 163, 45, 63, 90, 168, 114,
-    59, 33, 159, 95, 28, 139, 123, 98, 125, 196, 15, 70, 194, 253, 54, 14,
-    109, 226, 71, 17, 161, 93, 186, 87, 244, 138, 20, 52, 123, 204, 26, 60,
-    98, 55, 75, 185, 120, 252, 48, 196, 243, 150, 8, 89, 38, 169, 213, 6,
-    30, 123, 100, 134, 138, 212, 112, 211, 173, 15, 32, 145, 44, 11, 9, 186
-]
-
-func random_int(max) {
-    game_random_idx = (game_random_idx + 1) & 255
-    random_table[game_random_idx] % max
-}
+// game_states, game_random_idx, random_table, random_int defined in tables.magi
 const DI_EAST = 0
 const DI_NORTHEAST = 1
 const DI_NORTH = 2
@@ -4052,7 +4523,10 @@ func a_fatattack3(actor) {
 }
 
 func a_vilechase(actor) {
-    for mobj in mobj_list {
+    let _vi = 0
+    while _vi < len(mobj_list) {
+        const mobj = mobj_list[_vi]
+        _vi = _vi + 1
         if (mobj["flags"] & MF_CORPSE) == 0 { continue }
         if mobj["info"] == null { continue }
         if mobj["info"]["raisestate"] < 0 { continue }
@@ -4127,11 +4601,17 @@ func a_xscream(actor) {
 func a_keendie(actor) {
     a_fall(actor)
     let all_dead = true
-    for mobj in mobj_list {
+    let _ki = 0
+    while _ki < len(mobj_list) {
+        const mobj = mobj_list[_ki]
+        _ki = _ki + 1
         if mobj["type"] == actor["type"] && mobj["health"] > 0 { all_dead = false }
     }
     if all_dead {
-        for line in map_linedefs {
+        let _kj = 0
+        while _kj < len(map_linedefs) {
+            const line = map_linedefs[_kj]
+            _kj = _kj + 1
             if line["tag"] == 666 { door_open_tagged(666) }
         }
     }
@@ -4140,13 +4620,19 @@ func a_keendie(actor) {
 func a_bossdeath(actor) {
     if game_episode == 1 && game_mission == 8 {
         let all_dead = true
-        for mobj in mobj_list {
+        let _bi = 0
+        while _bi < len(mobj_list) {
+            const mobj = mobj_list[_bi]
+            _bi = _bi + 1
             if mobj["type"] == actor["type"] && mobj != actor && mobj["health"] > 0 {
                 all_dead = false
             }
         }
         if all_dead {
-            for line in map_linedefs {
+            let _bj = 0
+            while _bj < len(map_linedefs) {
+                const line = map_linedefs[_bj]
+                _bj = _bj + 1
                 if line["tag"] == 666 {
                     floor_lower_to_lowest_tagged(666)
                 }
@@ -4356,7 +4842,10 @@ func p_line_attack(source, angle, range, slope, damage) {
             player_damage(damage, source)
         }
     }
-    for mobj in mobj_list {
+    let _ri = 0
+    while _ri < len(mobj_list) {
+        const mobj = mobj_list[_ri]
+        _ri = _ri + 1
         if (mobj["flags"] & MF_SHOOTABLE) == 0 { continue }
         if mobj["health"] <= 0 { continue }
         if mobj == source { continue }
@@ -4408,7 +4897,10 @@ func player_mobj_ref() {
 }
 
 func door_open_tagged(tag) {
-    for sector in map_sectors {
+    let _oi = 0
+    while _oi < len(map_sectors) {
+        const sector = map_sectors[_oi]
+        _oi = _oi + 1
         if sector["tag"] == tag {
             door_open_sector(sector, VDOORSPEED, -1)
         }
@@ -4416,7 +4908,10 @@ func door_open_tagged(tag) {
 }
 
 func floor_lower_to_lowest_tagged(tag) {
-    for sector in map_sectors {
+    let _fi = 0
+    while _fi < len(map_sectors) {
+        const sector = map_sectors[_fi]
+        _fi = _fi + 1
         if sector["tag"] == tag {
             const target = find_lowest_floor_around(sector)
             door_thinkers.push({
@@ -4611,7 +5106,10 @@ func weapon_fire_bfg() {
 func weapon_melee_attack(damage, range) {
     let closest = null
     let closest_dist = range
-    for mobj in mobj_list {
+    let _mi = 0
+    while _mi < len(mobj_list) {
+        const mobj = mobj_list[_mi]
+        _mi = _mi + 1
         if (mobj["flags"] & MF_SHOOTABLE) == 0 { continue }
         if mobj["health"] <= 0 { continue }
         const dist = point_to_dist(player_x, player_y, mobj["x"], mobj["y"])
@@ -4634,7 +5132,10 @@ func weapon_melee_attack(damage, range) {
 func weapon_hitscan(angle, range, damage) {
     let closest = null
     let closest_dist = range
-    for mobj in mobj_list {
+    let _hi = 0
+    while _hi < len(mobj_list) {
+        const mobj = mobj_list[_hi]
+        _hi = _hi + 1
         if (mobj["flags"] & MF_SHOOTABLE) == 0 { continue }
         if mobj["health"] <= 0 { continue }
         const dist = point_to_dist(player_x, player_y, mobj["x"], mobj["y"])
@@ -4698,7 +5199,10 @@ func doors_init() {
 // ---------------------------------------------------------------------------
 func find_tagged_sector(tag) {
     if tag == 0 { return null }
-    for sector in map_sectors {
+    let _fti = 0
+    while _fti < len(map_sectors) {
+        const sector = map_sectors[_fti]
+        _fti = _fti + 1
         if sector["tag"] == tag { return sector }
     }
     null
@@ -4707,7 +5211,10 @@ func find_tagged_sector(tag) {
 func find_all_tagged_sectors(tag) {
     let result = []
     if tag == 0 { return result }
-    for sector in map_sectors {
+    let _fai = 0
+    while _fai < len(map_sectors) {
+        const sector = map_sectors[_fai]
+        _fai = _fai + 1
         if sector["tag"] == tag { result.push(sector) }
     }
     result
@@ -4715,7 +5222,10 @@ func find_all_tagged_sectors(tag) {
 
 func find_lowest_ceiling_around(sector) {
     let lowest = 32767 << FRACBITS
-    for line in map_linedefs {
+    let _lci = 0
+    while _lci < len(map_linedefs) {
+        const line = map_linedefs[_lci]
+        _lci = _lci + 1
         if line["frontsector"] == sector && line["backsector"] != null {
             if line["backsector"]["ceilingheight"] < lowest {
                 lowest = line["backsector"]["ceilingheight"]
@@ -4732,7 +5242,10 @@ func find_lowest_ceiling_around(sector) {
 
 func find_highest_ceiling_around(sector) {
     let highest = -32767 << FRACBITS
-    for line in map_linedefs {
+    let _hci = 0
+    while _hci < len(map_linedefs) {
+        const line = map_linedefs[_hci]
+        _hci = _hci + 1
         if line["frontsector"] == sector && line["backsector"] != null {
             if line["backsector"]["ceilingheight"] > highest {
                 highest = line["backsector"]["ceilingheight"]
@@ -4749,7 +5262,10 @@ func find_highest_ceiling_around(sector) {
 
 func find_lowest_floor_around(sector) {
     let lowest = sector["floorheight"]
-    for line in map_linedefs {
+    let _lfi = 0
+    while _lfi < len(map_linedefs) {
+        const line = map_linedefs[_lfi]
+        _lfi = _lfi + 1
         if line["frontsector"] == sector && line["backsector"] != null {
             if line["backsector"]["floorheight"] < lowest { lowest = line["backsector"]["floorheight"] }
         }
@@ -4762,7 +5278,10 @@ func find_lowest_floor_around(sector) {
 
 func find_highest_floor_around(sector) {
     let highest = -32767 << FRACBITS
-    for line in map_linedefs {
+    let _hfi = 0
+    while _hfi < len(map_linedefs) {
+        const line = map_linedefs[_hfi]
+        _hfi = _hfi + 1
         if line["frontsector"] == sector && line["backsector"] != null {
             if line["backsector"]["floorheight"] > highest { highest = line["backsector"]["floorheight"] }
         }
@@ -4776,7 +5295,10 @@ func find_highest_floor_around(sector) {
 func find_next_highest_floor(sector, current_height) {
     let best = 32767 << FRACBITS
     let found = false
-    for line in map_linedefs {
+    let _nhi = 0
+    while _nhi < len(map_linedefs) {
+        const line = map_linedefs[_nhi]
+        _nhi = _nhi + 1
         if line["frontsector"] == sector && line["backsector"] != null {
             const h = line["backsector"]["floorheight"]
             if h > current_height && h < best { best = h; found = true }
@@ -4792,7 +5314,10 @@ func find_next_highest_floor(sector, current_height) {
 func find_next_lowest_floor(sector, current_height) {
     let best = -32767 << FRACBITS
     let found = false
-    for line in map_linedefs {
+    let _nli = 0
+    while _nli < len(map_linedefs) {
+        const line = map_linedefs[_nli]
+        _nli = _nli + 1
         if line["frontsector"] == sector && line["backsector"] != null {
             const h = line["backsector"]["floorheight"]
             if h < current_height && h > best { best = h; found = true }
@@ -4807,7 +5332,10 @@ func find_next_lowest_floor(sector, current_height) {
 
 func find_shortest_texture_around(sector) {
     let min_tex = 32767 << FRACBITS
-    for line in map_linedefs {
+    let _sti = 0
+    while _sti < len(map_linedefs) {
+        const line = map_linedefs[_sti]
+        _sti = _sti + 1
         let is_adj = false
         if line["frontsector"] == sector { is_adj = true }
         if line["backsector"] == sector { is_adj = true }
@@ -4837,7 +5365,10 @@ func texture_height_for_name(name) {
 
 func find_min_surrounding_light(sector, min_val) {
     let result = min_val
-    for line in map_linedefs {
+    let _mli = 0
+    while _mli < len(map_linedefs) {
+        const line = map_linedefs[_mli]
+        _mli = _mli + 1
         if line["frontsector"] == sector && line["backsector"] != null {
             if line["backsector"]["lightlevel"] < result {
                 result = line["backsector"]["lightlevel"]
@@ -4854,7 +5385,10 @@ func find_min_surrounding_light(sector, min_val) {
 
 func find_max_surrounding_light(sector, max_val) {
     let result = max_val
-    for line in map_linedefs {
+    let _xli = 0
+    while _xli < len(map_linedefs) {
+        const line = map_linedefs[_xli]
+        _xli = _xli + 1
         if line["frontsector"] == sector && line["backsector"] != null {
             if line["backsector"]["lightlevel"] > result {
                 result = line["backsector"]["lightlevel"]
@@ -4887,7 +5421,10 @@ func get_sector_neighbor(sector, line) {
 }
 
 func sector_has_active_thinker(sector, thinker_type) {
-    for t in door_thinkers {
+    let _ati = 0
+    while _ati < len(door_thinkers) {
+        const t = door_thinkers[_ati]
+        _ati = _ati + 1
         if t["sector"] == sector && t["type"] == thinker_type { return true }
     }
     false
@@ -5179,7 +5716,10 @@ func ev_do_door_normal(line, use_tag) {
         do_door_for_sector(line["backsector"], VDOORSPEED, VDOORWAIT)
         return
     }
-    for sec in sectors {
+    let _dni = 0
+    while _dni < len(sectors) {
+        const sec = sectors[_dni]
+        _dni = _dni + 1
         if sector_has_active_thinker(sec, "door") { continue }
         do_door_for_sector(sec, VDOORSPEED, VDOORWAIT)
     }
@@ -5192,7 +5732,10 @@ func ev_do_door_open(line, use_tag) {
         do_door_for_sector(line["backsector"], VDOORSPEED, -1)
         return
     }
-    for sec in sectors {
+    let _doi = 0
+    while _doi < len(sectors) {
+        const sec = sectors[_doi]
+        _doi = _doi + 1
         if sector_has_active_thinker(sec, "door") { continue }
         do_door_for_sector(sec, VDOORSPEED, -1)
     }
@@ -5205,7 +5748,10 @@ func ev_do_door_open_grating(line) {
         do_door_for_sector(line["backsector"], VDOORSPEED, -1)
         return
     }
-    for sec in sectors {
+    let _dgi = 0
+    while _dgi < len(sectors) {
+        const sec = sectors[_dgi]
+        _dgi = _dgi + 1
         if sector_has_active_thinker(sec, "door") { continue }
         do_door_for_sector(sec, VDOORSPEED, -1)
     }
@@ -5214,7 +5760,10 @@ func ev_do_door_open_grating(line) {
 // Door closes
 func ev_do_door_close(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _dci = 0
+    while _dci < len(sectors) {
+        const sec = sectors[_dci]
+        _dci = _dci + 1
         if sector_has_active_thinker(sec, "door") { continue }
         const floor = sec["floorheight"]
         door_thinkers.push({
@@ -5233,7 +5782,10 @@ func ev_do_door_close(line) {
 // Door closes, waits 30 seconds, then opens
 func ev_do_door_close_30_open(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _dcoi = 0
+    while _dcoi < len(sectors) {
+        const sec = sectors[_dcoi]
+        _dcoi = _dcoi + 1
         if sector_has_active_thinker(sec, "door") { continue }
         const top = find_lowest_ceiling_around(sec) - 4 * FRACUNIT
         door_thinkers.push({
@@ -5256,7 +5808,10 @@ func ev_do_door_blaze_normal(line) {
         do_door_for_sector(line["backsector"], BLAZESPEED, BLAZEWAIT)
         return
     }
-    for sec in sectors {
+    let _bni = 0
+    while _bni < len(sectors) {
+        const sec = sectors[_bni]
+        _bni = _bni + 1
         if sector_has_active_thinker(sec, "door") { continue }
         do_door_for_sector(sec, BLAZESPEED, BLAZEWAIT)
     }
@@ -5269,7 +5824,10 @@ func ev_do_door_blaze_open(line) {
         do_door_for_sector(line["backsector"], BLAZESPEED, -1)
         return
     }
-    for sec in sectors {
+    let _boi = 0
+    while _boi < len(sectors) {
+        const sec = sectors[_boi]
+        _boi = _boi + 1
         if sector_has_active_thinker(sec, "door") { continue }
         do_door_for_sector(sec, BLAZESPEED, -1)
     }
@@ -5278,7 +5836,10 @@ func ev_do_door_blaze_open(line) {
 // Blazing door: closes fast
 func ev_do_door_blaze_close(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _bci = 0
+    while _bci < len(sectors) {
+        const sec = sectors[_bci]
+        _bci = _bci + 1
         if sector_has_active_thinker(sec, "door") { continue }
         const floor = sec["floorheight"]
         door_thinkers.push({
@@ -5345,7 +5906,10 @@ func hud_message_key(card) {
 // Core door creation for a sector
 func do_door_for_sector(sector, speed, wait_tics) {
     // If door already active, reverse closing doors
-    for t in door_thinkers {
+    let _dfi = 0
+    while _dfi < len(door_thinkers) {
+        const t = door_thinkers[_dfi]
+        _dfi = _dfi + 1
         if t["sector"] == sector && t["type"] == "door" {
             if t["direction"] == -1 {
                 t["direction"] = 1
@@ -5374,7 +5938,10 @@ func do_door_for_sector(sector, speed, wait_tics) {
 // Standard lift: floor lowers to lowest surrounding, waits, raises back
 func ev_do_plat_down_wait_up(line, wait) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _pwi = 0
+    while _pwi < len(sectors) {
+        const sec = sectors[_pwi]
+        _pwi = _pwi + 1
         if sector_has_active_thinker(sec, "plat") { continue }
         const low = find_lowest_floor_around(sec)
         door_thinkers.push({
@@ -5396,7 +5963,10 @@ func ev_do_plat_down_wait_up(line, wait) {
 // Blazing lift: same as above but faster
 func ev_do_plat_down_wait_up_blaze(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _pbi = 0
+    while _pbi < len(sectors) {
+        const sec = sectors[_pbi]
+        _pbi = _pbi + 1
         if sector_has_active_thinker(sec, "plat") { continue }
         const low = find_lowest_floor_around(sec)
         door_thinkers.push({
@@ -5418,7 +5988,10 @@ func ev_do_plat_down_wait_up_blaze(line) {
 // Perpetual platform: goes up and down forever
 func ev_do_plat_perpetual_raise(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _pri = 0
+    while _pri < len(sectors) {
+        const sec = sectors[_pri]
+        _pri = _pri + 1
         // Stop any existing perpetual plat first
         ev_stop_plat_for_sector(sec)
         const low = find_lowest_floor_around(sec)
@@ -5467,7 +6040,10 @@ func ev_stop_plat_for_sector(sector) {
 // Platform raise 24 units, change texture to surrounding
 func ev_do_plat_raise_24_change(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _p24i = 0
+    while _p24i < len(sectors) {
+        const sec = sectors[_p24i]
+        _p24i = _p24i + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = sec["floorheight"] + 24 * FRACUNIT
         const new_pic = get_floor_pic_from_line(line)
@@ -5488,7 +6064,10 @@ func ev_do_plat_raise_24_change(line) {
 // Platform raise 32 units, change texture to surrounding
 func ev_do_plat_raise_32_change(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _p32i = 0
+    while _p32i < len(sectors) {
+        const sec = sectors[_p32i]
+        _p32i = _p32i + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = sec["floorheight"] + 32 * FRACUNIT
         const new_pic = get_floor_pic_from_line(line)
@@ -5509,7 +6088,10 @@ func ev_do_plat_raise_32_change(line) {
 // Platform raise to next higher floor, change texture and type
 func ev_do_plat_raise_next_change(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _pnci = 0
+    while _pnci < len(sectors) {
+        const sec = sectors[_pnci]
+        _pnci = _pnci + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = find_next_highest_floor(sec, sec["floorheight"])
         const new_pic = get_floor_pic_from_line(line)
@@ -5542,7 +6124,10 @@ func get_floor_pic_from_line(line) {
 // Floor lower to lowest surrounding floor
 func ev_do_floor_lower_to_lowest(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _flli = 0
+    while _flli < len(sectors) {
+        const sec = sectors[_flli]
+        _flli = _flli + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = find_lowest_floor_around(sec)
         door_thinkers.push({
@@ -5560,7 +6145,10 @@ func ev_do_floor_lower_to_lowest(line) {
 // Floor lower to highest surrounding floor
 func ev_do_floor_lower_to_highest(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _flhi = 0
+    while _flhi < len(sectors) {
+        const sec = sectors[_flhi]
+        _flhi = _flhi + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = find_highest_floor_around(sec)
         door_thinkers.push({
@@ -5578,13 +6166,19 @@ func ev_do_floor_lower_to_highest(line) {
 // Floor lower to lowest surrounding floor, change texture and type
 func ev_do_floor_lower_to_lowest_change(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _flci = 0
+    while _flci < len(sectors) {
+        const sec = sectors[_flci]
+        _flci = _flci + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = find_lowest_floor_around(sec)
         // Find the floor texture from the model sector (lowest floor neighbor)
         let model_pic = sec["floorpic"]
         let model_special = 0
-        for ld in map_linedefs {
+        let _flcj = 0
+        while _flcj < len(map_linedefs) {
+            const ld = map_linedefs[_flcj]
+            _flcj = _flcj + 1
             let other = null
             if ld["frontsector"] == sec && ld["backsector"] != null { other = ld["backsector"] }
             if ld["backsector"] == sec && ld["frontsector"] != null { other = ld["frontsector"] }
@@ -5610,7 +6204,10 @@ func ev_do_floor_lower_to_lowest_change(line) {
 // Floor raise to lowest ceiling
 func ev_do_floor_raise_to_lowest_ceiling(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _frci = 0
+    while _frci < len(sectors) {
+        const sec = sectors[_frci]
+        _frci = _frci + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = find_lowest_ceiling_around(sec)
         door_thinkers.push({
@@ -5628,7 +6225,10 @@ func ev_do_floor_raise_to_lowest_ceiling(line) {
 // Floor raise to lowest ceiling, with crush
 func ev_do_floor_raise_crush(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _fcri = 0
+    while _fcri < len(sectors) {
+        const sec = sectors[_fcri]
+        _fcri = _fcri + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = find_lowest_ceiling_around(sec) - 8 * FRACUNIT
         door_thinkers.push({
@@ -5646,7 +6246,10 @@ func ev_do_floor_raise_crush(line) {
 // Floor raise to next higher floor
 func ev_do_floor_raise_to_next(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _frni = 0
+    while _frni < len(sectors) {
+        const sec = sectors[_frni]
+        _frni = _frni + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = find_next_highest_floor(sec, sec["floorheight"])
         door_thinkers.push({
@@ -5664,7 +6267,10 @@ func ev_do_floor_raise_to_next(line) {
 // Floor raise turbo (to next higher, fast)
 func ev_do_floor_raise_turbo(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _frti = 0
+    while _frti < len(sectors) {
+        const sec = sectors[_frti]
+        _frti = _frti + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = find_next_highest_floor(sec, sec["floorheight"])
         door_thinkers.push({
@@ -5682,7 +6288,10 @@ func ev_do_floor_raise_turbo(line) {
 // Floor turbo lower: lower to 8 above highest surrounding floor
 func ev_do_floor_turbo_lower(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _ftli = 0
+    while _ftli < len(sectors) {
+        const sec = sectors[_ftli]
+        _ftli = _ftli + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = find_highest_floor_around(sec) + 8 * FRACUNIT
         let actual_target = target
@@ -5702,7 +6311,10 @@ func ev_do_floor_turbo_lower(line) {
 // Floor raise 24 units
 func ev_do_floor_raise_24(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _fr24i = 0
+    while _fr24i < len(sectors) {
+        const sec = sectors[_fr24i]
+        _fr24i = _fr24i + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = sec["floorheight"] + 24 * FRACUNIT
         door_thinkers.push({
@@ -5720,7 +6332,10 @@ func ev_do_floor_raise_24(line) {
 // Floor raise 24 units and change texture
 func ev_do_floor_raise_24_change(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _f24ci = 0
+    while _f24ci < len(sectors) {
+        const sec = sectors[_f24ci]
+        _f24ci = _f24ci + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = sec["floorheight"] + 24 * FRACUNIT
         const new_pic = get_floor_pic_from_line(line)
@@ -5741,7 +6356,10 @@ func ev_do_floor_raise_24_change(line) {
 // Floor raise 512 units
 func ev_do_floor_raise_512(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _f512i = 0
+    while _f512i < len(sectors) {
+        const sec = sectors[_f512i]
+        _f512i = _f512i + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = sec["floorheight"] + 512 * FRACUNIT
         door_thinkers.push({
@@ -5759,7 +6377,10 @@ func ev_do_floor_raise_512(line) {
 // Floor raise by shortest lower texture around sector
 func ev_do_floor_raise_by_shortest_tex(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _fsti = 0
+    while _fsti < len(sectors) {
+        const sec = sectors[_fsti]
+        _fsti = _fsti + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const shortest = find_shortest_texture_around(sec)
         const target = sec["floorheight"] + shortest
@@ -5782,7 +6403,10 @@ func ev_do_floor_raise_by_shortest_tex(line) {
 // Ceiling lower to floor
 func ev_do_ceiling_lower_to_floor(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _clfi = 0
+    while _clfi < len(sectors) {
+        const sec = sectors[_clfi]
+        _clfi = _clfi + 1
         if sector_has_active_thinker(sec, "ceiling") { continue }
         const target = sec["floorheight"]
         door_thinkers.push({
@@ -5802,7 +6426,10 @@ func ev_do_ceiling_lower_to_floor(line) {
 // Ceiling lower to floor + 8
 func ev_do_ceiling_lower_to_floor_plus_8(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _clf8i = 0
+    while _clf8i < len(sectors) {
+        const sec = sectors[_clf8i]
+        _clf8i = _clf8i + 1
         if sector_has_active_thinker(sec, "ceiling") { continue }
         const target = sec["floorheight"] + 8 * FRACUNIT
         door_thinkers.push({
@@ -5822,7 +6449,10 @@ func ev_do_ceiling_lower_to_floor_plus_8(line) {
 // Ceiling raise to highest surrounding ceiling
 func ev_do_ceiling_raise_to_highest(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _crhi = 0
+    while _crhi < len(sectors) {
+        const sec = sectors[_crhi]
+        _crhi = _crhi + 1
         if sector_has_active_thinker(sec, "ceiling") { continue }
         const target = find_highest_ceiling_around(sec)
         door_thinkers.push({
@@ -5846,7 +6476,10 @@ func ev_do_ceiling_raise_to_highest(line) {
 // Slow crusher: ceiling moves down to floor + 8, reverses on contact, repeats
 func ev_do_crusher_slow(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _csi = 0
+    while _csi < len(sectors) {
+        const sec = sectors[_csi]
+        _csi = _csi + 1
         if sector_has_active_thinker(sec, "crusher") { continue }
         door_thinkers.push({
             "type": "crusher",
@@ -5867,7 +6500,10 @@ func ev_do_crusher_slow(line) {
 // Slow crusher perpetual: never stops
 func ev_do_crusher_slow_perpetual(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _cspi = 0
+    while _cspi < len(sectors) {
+        const sec = sectors[_cspi]
+        _cspi = _cspi + 1
         if sector_has_active_thinker(sec, "crusher") { continue }
         door_thinkers.push({
             "type": "crusher",
@@ -5888,7 +6524,10 @@ func ev_do_crusher_slow_perpetual(line) {
 // Fast crusher perpetual
 func ev_do_crusher_fast(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _cfi = 0
+    while _cfi < len(sectors) {
+        const sec = sectors[_cfi]
+        _cfi = _cfi + 1
         if sector_has_active_thinker(sec, "crusher") { continue }
         door_thinkers.push({
             "type": "crusher",
@@ -5909,7 +6548,10 @@ func ev_do_crusher_fast(line) {
 // Fast crusher perpetual (same as fast but used by type 6: W1)
 func ev_do_crusher_fast_perpetual(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _cfpi = 0
+    while _cfpi < len(sectors) {
+        const sec = sectors[_cfpi]
+        _cfpi = _cfpi + 1
         if sector_has_active_thinker(sec, "crusher") { continue }
         door_thinkers.push({
             "type": "crusher",
@@ -5930,7 +6572,10 @@ func ev_do_crusher_fast_perpetual(line) {
 // Silent crusher
 func ev_do_crusher_silent(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _csli = 0
+    while _csli < len(sectors) {
+        const sec = sectors[_csli]
+        _csli = _csli + 1
         if sector_has_active_thinker(sec, "crusher") { continue }
         door_thinkers.push({
             "type": "crusher",
@@ -6008,7 +6653,10 @@ func build_stairs(line, speed, step_height) {
         ok = false
         let found_next = false
         // Find a linedef that borders the current sector
-        for ld in map_linedefs {
+        let _sbi = 0
+        while _sbi < len(map_linedefs) {
+            const ld = map_linedefs[_sbi]
+            _sbi = _sbi + 1
             let other = null
             if ld["frontsector"] == map_sectors[sec_idx] && ld["backsector"] != null {
                 other = ld["backsector"]
@@ -6043,8 +6691,8 @@ func build_stairs(line, speed, step_height) {
             })
             ok = true
             found_next = true
-            // Break out of for to continue while loop with new sector
-            break
+            // Break out of while to continue outer while loop with new sector
+            _sbi = len(map_linedefs)
         }
         if !found_next { ok = false }
     }
@@ -6057,7 +6705,10 @@ func build_stairs(line, speed, step_height) {
 // Lights to 35 (darkest)
 func ev_do_light_off(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _loi = 0
+    while _loi < len(sectors) {
+        const sec = sectors[_loi]
+        _loi = _loi + 1
         sec["lightlevel"] = 35
     }
 }
@@ -6065,7 +6716,10 @@ func ev_do_light_off(line) {
 // Lights to minimum surrounding
 func ev_do_light_min_surrounding(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _lmsi = 0
+    while _lmsi < len(sectors) {
+        const sec = sectors[_lmsi]
+        _lmsi = _lmsi + 1
         const min_light = find_min_surrounding_light(sec, sec["lightlevel"])
         sec["lightlevel"] = min_light
     }
@@ -6074,7 +6728,10 @@ func ev_do_light_min_surrounding(line) {
 // Lights to brightest surrounding
 func ev_do_light_brightest(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _lbi = 0
+    while _lbi < len(sectors) {
+        const sec = sectors[_lbi]
+        _lbi = _lbi + 1
         const max_light = find_max_surrounding_light(sec, 0)
         sec["lightlevel"] = max_light
     }
@@ -6083,7 +6740,10 @@ func ev_do_light_brightest(line) {
 // Lights to 255 (full bright)
 func ev_do_light_on_255(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _l255i = 0
+    while _l255i < len(sectors) {
+        const sec = sectors[_l255i]
+        _l255i = _l255i + 1
         sec["lightlevel"] = 255
     }
 }
@@ -6091,7 +6751,10 @@ func ev_do_light_on_255(line) {
 // Start light strobing / blinking effect
 func ev_start_light_strobing(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _lsi = 0
+    while _lsi < len(sectors) {
+        const sec = sectors[_lsi]
+        _lsi = _lsi + 1
         if sector_has_active_thinker(sec, "strobe") { continue }
         const min_light = find_min_surrounding_light(sec, sec["lightlevel"])
         door_thinkers.push({
@@ -6113,7 +6776,10 @@ func ev_start_light_strobing(line) {
 
 // Called during map load to set up sector-based light effects
 func doors_spawn_sector_specials() {
-    for sec in map_sectors {
+    let _sspi = 0
+    while _sspi < len(map_sectors) {
+        const sec = map_sectors[_sspi]
+        _sspi = _sspi + 1
         match sec["special"] {
             1 => {
                 // Light Blink Random
@@ -6233,10 +6899,16 @@ func doors_spawn_sector_specials() {
 func ev_do_teleport(line) {
     const tag = line["tag"]
     // Find the destination sector(s) with matching tag
-    for sec in map_sectors {
+    let _tsi = 0
+    while _tsi < len(map_sectors) {
+        const sec = map_sectors[_tsi]
+        _tsi = _tsi + 1
         if sec["tag"] != tag { continue }
         // Find teleport destination thing (doomednum 14) in this sector
-        for thing in map_things {
+        let _tti = 0
+        while _tti < len(map_things) {
+            const thing = map_things[_tti]
+            _tti = _tti + 1
             if thing["type"] != 14 { continue }
             // Check if the thing is in the tagged sector
             const thing_ss = map_get_subsector(thing["x"], thing["y"])
@@ -6301,13 +6973,19 @@ func spawn_teleport_fog(x, y) {
 // and changes the inner texture to match the outer ring.
 func ev_do_donut(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _ddi = 0
+    while _ddi < len(sectors) {
+        const sec = sectors[_ddi]
+        _ddi = _ddi + 1
         if sector_has_active_thinker(sec, "floor") { continue }
 
         // Find the outer ring: the sector on the other side of any 2-sided line
         let outer = null
         let outer_line = null
-        for ld in map_linedefs {
+        let _ddj = 0
+        while _ddj < len(map_linedefs) {
+            const ld = map_linedefs[_ddj]
+            _ddj = _ddj + 1
             if ld["frontsector"] == sec && ld["backsector"] != null {
                 outer = ld["backsector"]
                 outer_line = ld
@@ -6317,7 +6995,10 @@ func ev_do_donut(line) {
 
         // Find the donut ring model: sector on the other side of outer from the pool
         let model = null
-        for ld in map_linedefs {
+        let _ddk = 0
+        while _ddk < len(map_linedefs) {
+            const ld = map_linedefs[_ddk]
+            _ddk = _ddk + 1
             if ld["frontsector"] == outer && ld["backsector"] != null && ld["backsector"] != sec {
                 model = ld["backsector"]
             }
@@ -6798,7 +7479,10 @@ func doors_update_animations() {
     if anim_tic % 8 != 0 { return }
 
     // Cycle animated flats in all sectors
-    for entry in anim_flats {
+    let _ani = 0
+    while _ani < len(anim_flats) {
+        const entry = anim_flats[_ani]
+        _ani = _ani + 1
         const base = entry[0]
         const frames = entry[1]
         const frame = (anim_tic / 8) % frames
@@ -6811,7 +7495,10 @@ func doors_update_animations() {
 // SCROLLING WALLS (type 48 -- special linedef flag)
 // ===========================================================================
 func doors_update_scrolling_walls() {
-    for line in map_linedefs {
+    let _swi = 0
+    while _swi < len(map_linedefs) {
+        const line = map_linedefs[_swi]
+        _swi = _swi + 1
         if line["special"] == 48 {
             // Scroll texture left: adjust texture offset on front sidedef
             if line["front"] != null {
@@ -7481,7 +8168,10 @@ func automap_draw() {
     const scale = FRACUNIT / 4
     const cx = VIEWWIDTH / 2
     const cy = VIEWHEIGHT / 2
-    for line in map_linedefs {
+    let _ami = 0
+    while _ami < len(map_linedefs) {
+        const line = map_linedefs[_ami]
+        _ami = _ami + 1
         if (line["flags"] & ML_DONTDRAW) != 0 && (player_powers[pw_allmap] == 0) { continue }
         const x1 = cx + fixed_to_int(fixed_mul(line["v1"]["x"] - player_x, scale))
         const y1 = cy - fixed_to_int(fixed_mul(line["v1"]["y"] - player_y, scale))
@@ -7499,7 +8189,10 @@ func automap_draw() {
         am_draw_line(x1, y1, x2, y2, color)
     }
     am_draw_arrow(cx, cy)
-    for mobj in mobj_list {
+    let _amj = 0
+    while _amj < len(mobj_list) {
+        const mobj = mobj_list[_amj]
+        _amj = _amj + 1
         if mobj["health"] <= 0 && (mobj["flags"] & MF_CORPSE) == 0 { continue }
         const tx = cx + fixed_to_int(fixed_mul(mobj["x"] - player_x, scale))
         const ty = cy - fixed_to_int(fixed_mul(mobj["y"] - player_y, scale))
@@ -7667,7 +8360,10 @@ func finale_draw(ep) {
     const text = if ep >= 1 && ep <= 3 { texts[ep - 1] } else { "You won!" }
     let y = 10
     const lines = text.split("\n")
-    for line in lines {
+    let _li = 0
+    while _li < len(lines) {
+        const line = lines[_li]
+        _li = _li + 1
         hud_draw_text(10, y, line)
         y = y + 12
     }
@@ -7874,7 +8570,6 @@ func tables_init() {
     game_states = []
     init_all_states()
     init_all_mobjinfo()
-    println(f"Tables: {len(game_states)} states, {len(mobjinfo_table)} thing types")
 }
 
 func st(spr, frm, tics, act, nxt) {
@@ -8295,7 +8990,6 @@ func init_all_states() {
     st(SPR_FCAN, 0, 4, null, 514)
     st(SPR_FCAN, 1, 4, null, 515)
     st(SPR_FCAN, 2, 4, null, 513)
-    println(f"Initialized {len(game_states)} states")
 }
 
 func mi(dnum, ss, hp, sees, rt, ps, pc, ms, mis, ds, xds, spd, rad, ht, ma, fl) {
@@ -8401,7 +9095,6 @@ func init_all_mobjinfo() {
     mi(15, 470, 0, -1, 0, -1, 0, -1, -1, -1, -1, 0, 20*FRACUNIT, 16*FRACUNIT, 100, 0)
     mi(2050, 509, 0, -1, 0, -1, 0, -1, -1, -1, -1, 0, 16*FRACUNIT, 16*FRACUNIT, 100, 0)
     mi(2051, 509, 0, -1, 0, -1, 0, -1, -1, -1, -1, 0, 16*FRACUNIT, 16*FRACUNIT, 100, 0)
-    println(f"Registered {len(mobjinfo_table)} thing types")
 }
 
 func mobjinfo_get(doomednum) {
@@ -8475,22 +9168,16 @@ let key_states = {"__e": 0}
 const EMBEDDED_WAD = embed("DOOM1.WAD")
 
 func doom_main() {
-    println("DOOM - MAGI Engine")
-    println("Loading...")
-    println("math_init...")
     math_init()
-    println("tables_init...")
     tables_init()
-    println("About to check WAD...")
     const wad = EMBEDDED_WAD
-    println("Got WAD ref")
-    println(f"WAD data: {len(wad)} bytes")
     if !wad_open_bytes(wad) {
         println("ERROR: WAD invalid")
         return
     }
     texture_init()
     render_init()
+    r2_init()
     hud_init()
     doors_init()
     game_window = sdl_init("DOOM", WINDOWWIDTH, WINDOWHEIGHT)
@@ -8498,7 +9185,6 @@ func doom_main() {
         println("ERROR: SDL2 init failed")
         return
     }
-    println("DOOM ready.")
     game_new(1, 1, sk_medium)
     game_loop()
     sdl_destroy(game_window)
@@ -8511,11 +9197,7 @@ func game_new(episode, mission, skill) {
     game_state = GS_LEVEL
     game_level_time = 0
     map_load(episode, mission)
-    println("  Spawning things...")
     things_spawn_map()
-    println("  Things spawned.")
-    println(f"Starting E{episode}M{mission}")
-    println("Entering game loop...")
 }
 
 func game_loop() {
@@ -8523,7 +9205,11 @@ func game_loop() {
     let tic_accumulator = 0
     const tic_ms = 1000 / TICRATE
 
+    let frame_count = 0
+    let fps_timer = sdl_ticks(game_window)
+
     while game_running {
+        __arena_reset()
         const now = sdl_ticks(game_window)
         tic_accumulator = tic_accumulator + (now - last_tic_time)
         last_tic_time = now
@@ -8538,7 +9224,14 @@ func game_loop() {
 
         game_render()
         render_blit(game_window)
-        sdl_present(game_window)
+
+        frame_count = frame_count + 1
+        const elapsed = sdl_ticks(game_window) - fps_timer
+        if elapsed >= 1000 {
+            sdl_set_title(game_window, f"DOOM - {frame_count} fps")
+            frame_count = 0
+            fps_timer = sdl_ticks(game_window)
+        }
 
         const frame_time = sdl_ticks(game_window) - now
         if frame_time < 16 { sdl_delay(16 - frame_time) }
@@ -8631,7 +9324,25 @@ func game_render() {
             if hud_automap {
                 automap_draw()
             } else {
-                render_player_view()
+                r2_render_player_view()
+                // Copy r2 framebuffer to r_framebuffer for sprites + HUD
+                let cpi = 0
+                while cpi < SCREENWIDTH * SCREENHEIGHT {
+                    r_framebuffer[cpi] = r2_fb[cpi]
+                    cpi = cpi + 1
+                }
+                // Render sprites on top of the 3D view
+                // Copy render2's occlusion data for sprite clipping
+                cpi = 0
+                while cpi < SCREENWIDTH {
+                    r_ceilingclip[cpi] = r2_ceil_ocl[cpi]
+                    r_floorclip[cpi] = r2_floor_ocl[cpi]
+                    // r_occlusion doesn't exist in render2 — initialize to 0 (not occluded)
+                    // Sprites will clip against ceiling/floor bounds instead
+                    if len(r_occlusion) > cpi { r_occlusion[cpi] = 0 }
+                    cpi = cpi + 1
+                }
+                r_vissprites = []
                 things_add_vissprites()
                 r_draw_vissprites()
             }
@@ -8647,7 +9358,10 @@ func game_render() {
 }
 
 func game_check_pickups() {
-    for mobj in mobj_list {
+    let pi = 0
+    while pi < len(mobj_list) {
+        const mobj = mobj_list[pi]
+        pi = pi + 1
         if (mobj["flags"] & MF_SPECIAL) != 0 {
             pickup_touch(mobj)
         }

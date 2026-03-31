@@ -12,22 +12,16 @@ let key_states = {"__e": 0}
 const EMBEDDED_WAD = embed("DOOM1.WAD")
 
 func doom_main() {
-    println("DOOM - MAGI Engine")
-    println("Loading...")
-    println("math_init...")
     math_init()
-    println("tables_init...")
     tables_init()
-    println("About to check WAD...")
     const wad = EMBEDDED_WAD
-    println("Got WAD ref")
-    println(f"WAD data: {len(wad)} bytes")
     if !wad_open_bytes(wad) {
         println("ERROR: WAD invalid")
         return
     }
     texture_init()
     render_init()
+    r2_init()
     hud_init()
     doors_init()
     game_window = sdl_init("DOOM", WINDOWWIDTH, WINDOWHEIGHT)
@@ -35,7 +29,6 @@ func doom_main() {
         println("ERROR: SDL2 init failed")
         return
     }
-    println("DOOM ready.")
     game_new(1, 1, sk_medium)
     game_loop()
     sdl_destroy(game_window)
@@ -48,11 +41,7 @@ func game_new(episode, mission, skill) {
     game_state = GS_LEVEL
     game_level_time = 0
     map_load(episode, mission)
-    println("  Spawning things...")
     things_spawn_map()
-    println("  Things spawned.")
-    println(f"Starting E{episode}M{mission}")
-    println("Entering game loop...")
 }
 
 func game_loop() {
@@ -60,7 +49,11 @@ func game_loop() {
     let tic_accumulator = 0
     const tic_ms = 1000 / TICRATE
 
+    let frame_count = 0
+    let fps_timer = sdl_ticks(game_window)
+
     while game_running {
+        __arena_reset()
         const now = sdl_ticks(game_window)
         tic_accumulator = tic_accumulator + (now - last_tic_time)
         last_tic_time = now
@@ -75,7 +68,14 @@ func game_loop() {
 
         game_render()
         render_blit(game_window)
-        sdl_present(game_window)
+
+        frame_count = frame_count + 1
+        const elapsed = sdl_ticks(game_window) - fps_timer
+        if elapsed >= 1000 {
+            sdl_set_title(game_window, f"DOOM - {frame_count} fps")
+            frame_count = 0
+            fps_timer = sdl_ticks(game_window)
+        }
 
         const frame_time = sdl_ticks(game_window) - now
         if frame_time < 16 { sdl_delay(16 - frame_time) }
@@ -168,7 +168,25 @@ func game_render() {
             if hud_automap {
                 automap_draw()
             } else {
-                render_player_view()
+                r2_render_player_view()
+                // Copy r2 framebuffer to r_framebuffer for sprites + HUD
+                let cpi = 0
+                while cpi < SCREENWIDTH * SCREENHEIGHT {
+                    r_framebuffer[cpi] = r2_fb[cpi]
+                    cpi = cpi + 1
+                }
+                // Render sprites on top of the 3D view
+                // Copy render2's occlusion data for sprite clipping
+                cpi = 0
+                while cpi < SCREENWIDTH {
+                    r_ceilingclip[cpi] = r2_ceil_ocl[cpi]
+                    r_floorclip[cpi] = r2_floor_ocl[cpi]
+                    // r_occlusion doesn't exist in render2 — initialize to 0 (not occluded)
+                    // Sprites will clip against ceiling/floor bounds instead
+                    if len(r_occlusion) > cpi { r_occlusion[cpi] = 0 }
+                    cpi = cpi + 1
+                }
+                r_vissprites = []
                 things_add_vissprites()
                 r_draw_vissprites()
             }
@@ -184,7 +202,10 @@ func game_render() {
 }
 
 func game_check_pickups() {
-    for mobj in mobj_list {
+    let pi = 0
+    while pi < len(mobj_list) {
+        const mobj = mobj_list[pi]
+        pi = pi + 1
         if (mobj["flags"] & MF_SPECIAL) != 0 {
             pickup_touch(mobj)
         }
