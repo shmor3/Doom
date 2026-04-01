@@ -8,6 +8,12 @@ let tex_texture_cache = {"__e": 0}
 let tex_flat_cache = {"__e": 0}
 let tex_sprite_lumps = {"__e": 0}
 
+// Animated textures: each entry is [is_flat, base_names, speed]
+// base_names is array of texture/flat names in the cycle
+let tex_anims = []
+// Original flat names saved for cycling
+let tex_flat_originals = {"__e": 0}
+
 func texture_init() {
     texture_load_palette()
     texture_load_colormaps()
@@ -15,6 +21,7 @@ func texture_init() {
     texture_load_textures()
     texture_index_flats()
     texture_index_sprites()
+    texture_init_anims()
 }
 
 func texture_load_palette() {
@@ -28,7 +35,6 @@ func texture_load_palette() {
         tex_palette.push([data[ofs], data[ofs + 1], data[ofs + 2]])
         i = i + 1
     }
-    println(f"  Palette: {len(tex_palette)} colors")
 }
 
 func texture_load_colormaps() {
@@ -42,43 +48,37 @@ func texture_load_colormaps() {
         tex_colormaps.push(cmap)
         m = m + 1
     }
-    println(f"  Colormaps: {len(tex_colormaps)}")
 }
 
 func texture_load_pnames() {
     const idx = wad_find("PNAMES")
     if idx < 0 { println("ERROR: PNAMES not found"); return }
     const data = wad_read(idx)
-    println(f"  PNAMES lump: {len(data)} bytes")
     const count = read_i32(data, 0)
-    println(f"  PNAMES count: {count}")
     tex_pnames = []
     let i = 0
     while i < count {
         tex_pnames.push(read_string(data, 4 + i * 8, 8).upper())
-        if i % 50 == 0 { println(f"    pname {i}/{count}") }
         i = i + 1
     }
-    println(f"  Patches: {len(tex_pnames)}")
 }
 
 func texture_load_textures() {
     tex_textures = []
-    println("  Loading TEXTURE1/2...")
     let tl_idx = 0
     const lump_names = ["TEXTURE1", "TEXTURE2"]
     while tl_idx < len(lump_names) {
         const lname = lump_names[tl_idx]
         tl_idx = tl_idx + 1
         const idx = wad_find(lname)
-        if idx < 0 { println(f"    {lname}: not found"); continue }
+        if idx < 0 { continue }
         const data = wad_read(idx)
         const numtextures = read_i32(data, 0)
-        println(f"    {lname}: {numtextures} textures")
         let i = 0
         while i < numtextures {
             const offset = read_i32(data, 4 + i * 4)
             const name = read_string(data, offset, 8).upper()
+            // Debug: try reading at different offsets to find correct width/height
             const width = read_u16(data, offset + 12)
             const height = read_u16(data, offset + 14)
             const patchcount = read_u16(data, offset + 20)
@@ -94,7 +94,6 @@ func texture_load_textures() {
             i = i + 1
         }
     }
-    println(f"Loaded {len(tex_textures)} textures")
 }
 
 func texture_index_flats() {
@@ -108,7 +107,6 @@ func texture_index_flats() {
         }
         i = i + 1
     }
-    println(f"Indexed {len(tex_flats)} flats")
 }
 
 func texture_index_sprites() {
@@ -120,7 +118,6 @@ func texture_index_sprites() {
         tex_sprite_lumps[name] = i
         i = i + 1
     }
-    println(f"Indexed {len(tex_sprite_lumps)} sprite lumps")
 }
 
 func texture_find(name) {
@@ -156,7 +153,11 @@ func texture_get_column(texnum, col) {
     let column = []
     let i = 0
     while i < h { column.push(0); i = i + 1 }
-    for pdef in tex[3] {
+    const patches = tex[3]
+    let pi = 0
+    while pi < len(patches) {
+        const pdef = patches[pi]
+        pi = pi + 1
         const pname_idx = pdef[2]
         if pname_idx >= len(tex_pnames) { continue }
         const pname = tex_pnames[pname_idx]
@@ -165,19 +166,25 @@ func texture_get_column(texnum, col) {
         const pcol = actual_col - pdef[0]
         if pcol < 0 { continue }
         const patch_data = wad_read(lump_idx)
+        if len(patch_data) < 12 { continue }
         const patch_width = read_u16(patch_data, 0)
         if pcol >= patch_width { continue }
+        if 8 + pcol * 4 + 3 >= len(patch_data) { continue }
         const col_ofs = read_i32(patch_data, 8 + pcol * 4)
+        if col_ofs < 0 || col_ofs >= len(patch_data) { continue }
         let post_ofs = col_ofs
-        while post_ofs < len(patch_data) {
+        while post_ofs >= 0 && post_ofs < len(patch_data) {
             const topdelta = patch_data[post_ofs]
             if topdelta == 255 { break }
+            if post_ofs + 1 >= len(patch_data) { break }
             const post_len = patch_data[post_ofs + 1]
             let j = 0
             while j < post_len {
+                const src_idx = post_ofs + 3 + j
+                if src_idx >= len(patch_data) { break }
                 const dest_y = topdelta + pdef[1] + j
                 if dest_y >= 0 && dest_y < h {
-                    column[dest_y] = patch_data[post_ofs + 3 + j]
+                    column[dest_y] = patch_data[src_idx]
                 }
                 j = j + 1
             }
@@ -257,4 +264,143 @@ func get_colormap(idx) {
     if idx < 0 { idx = 0 }
     if idx >= len(tex_colormaps) { idx = len(tex_colormaps) - 1 }
     tex_colormaps[idx]
+}
+
+// ===========================================================================
+// Animated Textures (p_spec.c P_InitPicAnims / P_UpdateSpecials)
+// ===========================================================================
+
+// Doom1 flat animation sequences: [last_name, first_name, speed_tics]
+const FLAT_ANIM_DEFS = [
+    ["NUKAGE3",  "NUKAGE1",  8],
+    ["FWATER4",  "FWATER1",  8],
+    ["SWATER4",  "SWATER1",  8],
+    ["LAVA4",    "LAVA1",    8],
+    ["BLOOD3",   "BLOOD1",   8],
+    ["RROCK08",  "RROCK05",  8],
+    ["SLIME04",  "SLIME01",  8],
+    ["SLIME08",  "SLIME05",  8],
+    ["SLIME12",  "SLIME09",  8]
+]
+
+// Doom1 wall animation sequences
+const WALL_ANIM_DEFS = [
+    ["BLODGR4",  "BLODGR1",  8],
+    ["SLADRIP3", "SLADRIP1", 8],
+    ["BLODRIP4", "BLODRIP1", 8],
+    ["FIREWALL", "FIREWALA", 8],
+    ["GSTFONT3", "GSTFONT1", 8],
+    ["FIRELAV3", "FIRELAVA", 8],
+    ["FIREMAG3", "FIREMAG1", 8],
+    ["FIREBLU2", "FIREBLU1", 8],
+    ["ROCKRED3", "ROCKRED1", 8],
+    ["BFALL4",   "BFALL1",   8],
+    ["SFALL4",   "SFALL1",   8],
+    ["WFALL4",   "WFALL1",   8],
+    ["DBRAIN4",  "DBRAIN1",  8]
+]
+
+func texture_init_anims() {
+    tex_anims = []
+    // Build flat animation groups
+    let ai = 0
+    while ai < len(FLAT_ANIM_DEFS) {
+        const def = FLAT_ANIM_DEFS[ai]
+        ai = ai + 1
+        const last_name = def[0]
+        const first_name = def[1]
+        const speed = def[2]
+        // Find first and last flat indices
+        if !tex_flats.has(first_name) { continue }
+        if !tex_flats.has(last_name) { continue }
+        // Build list of names in this range by numbering
+        let names = []
+        let num = 1
+        while true {
+            // Try name with incrementing number suffix
+            const base = first_name
+            // Doom naming: last char is digit, e.g. NUKAGE1,NUKAGE2,NUKAGE3
+            const prefix = base.slice(0, len(base) - 1)
+            const candidate = prefix + to_string(num)
+            if tex_flats.has(candidate) {
+                names.push(candidate)
+                if candidate == last_name { break }
+                num = num + 1
+            } else {
+                break
+            }
+        }
+        if len(names) > 1 {
+            // Save original lump indices
+            let ni = 0
+            while ni < len(names) {
+                tex_flat_originals[names[ni]] = tex_flats[names[ni]]
+                ni = ni + 1
+            }
+            tex_anims.push([true, names, speed])
+        }
+    }
+    // Wall anims: similar but for tex_textures
+    ai = 0
+    while ai < len(WALL_ANIM_DEFS) {
+        const def = WALL_ANIM_DEFS[ai]
+        ai = ai + 1
+        const last_name = def[0]
+        const first_name = def[1]
+        const speed = def[2]
+        if texture_find(first_name) == null { continue }
+        if texture_find(last_name) == null { continue }
+        let names = []
+        let num = 1
+        while true {
+            const base = first_name
+            const prefix = base.slice(0, len(base) - 1)
+            const candidate = prefix + to_string(num)
+            if texture_find(candidate) != null {
+                names.push(candidate)
+                if candidate == last_name { break }
+                num = num + 1
+            } else {
+                // Try letter-based suffix (FIREWALA..FIREWALL)
+                break
+            }
+        }
+        if len(names) > 1 {
+            tex_anims.push([false, names, speed])
+        }
+    }
+}
+
+// Called each game tic to update animated textures
+func texture_update_anims(tic) {
+    let ai = 0
+    while ai < len(tex_anims) {
+        const anim = tex_anims[ai]
+        ai = ai + 1
+        const is_flat = anim[0]
+        const names = anim[1]
+        const speed = anim[2]
+        const num_frames = len(names)
+        const frame = (tic / speed) % num_frames
+        if is_flat {
+            // Cycle flat indices: all names in group point to the current frame's lump
+            const target_lump = tex_flat_originals[names[frame]]
+            let ni = 0
+            while ni < num_frames {
+                tex_flats[names[ni]] = target_lump
+                ni = ni + 1
+            }
+        }
+        // Wall texture animation: swap cache entries
+        // (textures are cached by name, so invalidate cache for this group)
+        if !is_flat {
+            let ni = 0
+            while ni < num_frames {
+                if tex_texture_cache.has(names[ni]) {
+                    tex_texture_cache[names[ni]] = tex_texture_cache[names[frame]]
+                }
+                ni = ni + 1
+            }
+        }
+    }
 }

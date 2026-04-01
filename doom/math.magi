@@ -25,7 +25,6 @@ let finetangent = []
 let tantoangle = []
 
 func math_init() {
-    println("  building sine table...")
     finesine = []
     const pi = 3.14159265358979323846
     let i = 0
@@ -36,30 +35,16 @@ func math_init() {
         i = i + 1
     }
     finecosine_offset = 2048
-    println("  building tangent table...")
+    // Build finetangent[0..4096]: matches original Doom's R_InitTables
+    // finetangent[i] = FRACUNIT * tan((i - FINEANGLES/4 + 0.5) / FINEANGLES * 2 * PI)
     finetangent = []
     i = 0
-    while i < 4096 {
-        const idx = i - 1024
-        const angle = (idx * 1.0) * pi / 2048.0
-        let t = 0
-        if idx == 1024 || idx == -1024 {
-            t = 65536 * 65536
-        } else {
-            const s = sin(angle)
-            const c = cos(angle)
-            if c > 0.00001 {
-                t = floor(s / c * 65536.0)
-            } else if c < -0.00001 {
-                t = floor(s / c * 65536.0)
-            } else {
-                t = 65536 * 256
-            }
-        }
+    while i < FINEANGLES / 2 {
+        const a = ((i - FINEANGLES / 4 + 0.5) * 1.0 / (FINEANGLES * 1.0)) * 2.0 * pi
+        const t = floor(65536.0 * (sin(a * 1.0) / cos(a * 1.0)) + 0.5)
         finetangent.push(t)
         i = i + 1
     }
-    println("  building angle table...")
     tantoangle = []
     i = 0
     while i < 2049 {
@@ -70,7 +55,6 @@ func math_init() {
         tantoangle.push(v)
         i = i + 1
     }
-    println("  math tables ready")
 }
 
 func fine_sine(a) {
@@ -96,8 +80,8 @@ func point_to_angle_2(x1, y1, x2, y2) {
     if dx == 0 && dy == 0 { return 0 }
     const a = atan2(dy * 1.0, dx * 1.0)
     const pi = 3.14159265358979323846
-    const bam = floor(a * (ANG180 * 1.0) / pi + 0.5)
-    if bam < 0 { bam + ANG360 } else { bam }
+    const bam = floor(a * (0x80000000 * 1.0) / pi + 0.5)
+    if bam < 0 { bam + 0x100000000 } else { bam }
 }
 
 func point_to_dist(x1, y1, x2, y2) {
@@ -109,7 +93,7 @@ func point_to_dist(x1, y1, x2, y2) {
         dy = temp
     }
     if dx == 0 { return 0 }
-    const angle = (tantoangle[fixed_div(dy, dx) >> (FRACBITS - SLOPEBITS)] + ANG90) >> ANGLETOFINESHIFT
+    const angle = (tantoangle[fixed_div(dy, dx) >> (FRACBITS - SLOPEBITS)] + 0x40000000) >> ANGLETOFINESHIFT
     if angle >= 0 && angle < len(finesine) && finesine[angle] != 0 {
         fixed_div(dx, finesine[angle])
     } else {

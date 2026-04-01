@@ -37,7 +37,7 @@ func player_spawn(x, y, angle) {
     player_x = x
     player_y = y
     player_z = 0
-    player_angle = angle * ANG45 / 45
+    player_angle = angle * 0x20000000 / 45
     player_momx = 0
     player_momy = 0
     player_health = 100
@@ -83,27 +83,33 @@ func player_think(cmd) {
         if player_powers[i] > 0 { player_powers[i] = player_powers[i] - 1 }
         i = i + 1
     }
+    player_using = cmd["use"]
     if player_using { player_use_lines() }
 }
 
 func player_move(cmd) {
+    // Matching original DOOM p_user.c P_MovePlayer + g_game.c G_BuildTiccmd
     const forwardmove = cmd["forward"]
     const sidemove = cmd["side"]
     const angleturn = cmd["turn"]
     player_running = cmd["run"]
-    player_angle = player_angle + angleturn
-    while player_angle >= ANG360 { player_angle = player_angle - ANG360 }
-    while player_angle < 0 { player_angle = player_angle + ANG360 }
+
+    // Turn: angleturn is in original DOOM units (640/1280), scale to BAM
+    // Original: cmd->angleturn <<= 16 in G_DoLoadLevel, applied as mo->angle += cmd->angleturn<<16
+    player_angle = player_angle + (angleturn << 16)
+    while player_angle >= 0x100000000 { player_angle = player_angle - 0x100000000 }
+    while player_angle < 0 { player_angle = player_angle + 0x100000000 }
+
+    // P_Thrust: thrust amount is forwardmove * 2048 (<<11 in p_mobj.c, but cmd already has <<13 factor)
+    // Original: P_Thrust(player, player->mo->angle, cmd->forwardmove*2048)
     if forwardmove != 0 {
-        const thrust = if player_running { forwardmove * 2 } else { forwardmove }
-        player_momx = player_momx + fixed_mul(thrust << 13, fine_cosine(player_angle))
-        player_momy = player_momy + fixed_mul(thrust << 13, fine_sine(player_angle))
+        player_momx = player_momx + fixed_mul(forwardmove << 11, fine_cosine(player_angle))
+        player_momy = player_momy + fixed_mul(forwardmove << 11, fine_sine(player_angle))
     }
     if sidemove != 0 {
-        const thrust = if player_running { sidemove * 2 } else { sidemove }
-        const sideangle = (player_angle - ANG90 + ANG360) % ANG360
-        player_momx = player_momx + fixed_mul(thrust << 13, fine_cosine(sideangle))
-        player_momy = player_momy + fixed_mul(thrust << 13, fine_sine(sideangle))
+        const sideangle = (player_angle - 0x40000000 + 0x100000000) % 0x100000000
+        player_momx = player_momx + fixed_mul(sidemove << 11, fine_cosine(sideangle))
+        player_momy = player_momy + fixed_mul(sidemove << 11, fine_sine(sideangle))
     }
     const newx = player_x + player_momx
     const newy = player_y + player_momy

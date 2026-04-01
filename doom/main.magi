@@ -9,14 +9,30 @@ let game_level_time = 0
 
 let key_states = {"__e": 0}
 
-const EMBEDDED_WAD = embed("DOOM1.WAD")
+// Demo recording/playback
+let demo_recording = false
+let demo_playing = false
+let demo_cmds = []
+let demo_play_idx = 0
+
+let EMBEDDED_WAD = null
 
 func doom_main() {
     math_init()
     tables_init()
-    const wad = EMBEDDED_WAD
-    if !wad_open_bytes(wad) {
-        println("ERROR: WAD invalid")
+    // Try command-line WAD path first, then embedded shareware WAD
+    const args = argv()
+    let wad_loaded = false
+    if len(args) > 1 {
+        wad_loaded = wad_open(args[1])
+        if wad_loaded { println("Loaded WAD: " + args[1]) }
+    }
+    if !wad_loaded {
+        EMBEDDED_WAD = embed("DOOM1.WAD")
+        wad_loaded = wad_open_bytes(EMBEDDED_WAD)
+    }
+    if !wad_loaded {
+        println("ERROR: No valid WAD found")
         return
     }
     texture_init()
@@ -121,25 +137,179 @@ func game_key_down(sc) {
             player_pendingweapon = wp
         }
     }
+    if sc == SC_F5 {
+        game_quicksave()
+    }
+    if sc == SC_F6 {
+        demo_toggle_record()
+    }
+    if sc == SC_F7 {
+        demo_start_playback()
+    }
+    if sc == SC_F9 {
+        game_quickload()
+    }
+}
+
+func game_quicksave() {
+    const data = to_string(game_episode) + "\n" +
+        to_string(game_mission) + "\n" +
+        to_string(game_skill) + "\n" +
+        to_string(player_x) + "\n" +
+        to_string(player_y) + "\n" +
+        to_string(player_z) + "\n" +
+        to_string(player_angle) + "\n" +
+        to_string(player_health) + "\n" +
+        to_string(player_armor) + "\n" +
+        to_string(player_armortype) + "\n" +
+        to_string(player_ammo[0]) + "\n" +
+        to_string(player_ammo[1]) + "\n" +
+        to_string(player_ammo[2]) + "\n" +
+        to_string(player_ammo[3]) + "\n" +
+        to_string(game_level_time) + "\n"
+    write_file("doom_save.dat", data)
+    println("Game saved!")
+}
+
+func game_quickload() {
+    const data = read_file("doom_save.dat")
+    if data == null || data == "" {
+        println("No save file found!")
+        return
+    }
+    const lines = split(data, "\n")
+    if len(lines) < 15 {
+        println("Invalid save file!")
+        return
+    }
+    const ep = to_int(lines[0])
+    const mi = to_int(lines[1])
+    const sk = to_int(lines[2])
+    if ep != game_episode || mi != game_mission {
+        game_new(ep, mi, sk)
+    }
+    player_x = to_int(lines[3])
+    player_y = to_int(lines[4])
+    player_z = to_int(lines[5])
+    player_angle = to_int(lines[6])
+    player_health = to_int(lines[7])
+    player_armor = to_int(lines[8])
+    player_armortype = to_int(lines[9])
+    player_ammo[0] = to_int(lines[10])
+    player_ammo[1] = to_int(lines[11])
+    player_ammo[2] = to_int(lines[12])
+    player_ammo[3] = to_int(lines[13])
+    game_level_time = to_int(lines[14])
+    println("Game loaded!")
+}
+
+func demo_toggle_record() {
+    if demo_recording {
+        demo_recording = false
+        // Save demo to file
+        let data = to_string(game_episode) + "," + to_string(game_mission) + "," + to_string(game_skill) + "\n"
+        let di = 0
+        while di < len(demo_cmds) {
+            const c = demo_cmds[di]
+            data = data + to_string(c["forward"]) + "," + to_string(c["side"]) + "," + to_string(c["turn"]) + "," + to_string(if c["run"] { 1 } else { 0 }) + "," + to_string(if c["fire"] { 1 } else { 0 }) + "\n"
+            di = di + 1
+        }
+        write_file("doom_demo.lmp", data)
+        println(f"Demo saved! ({len(demo_cmds)} tics)")
+    } else {
+        demo_recording = true
+        demo_cmds = []
+        println("Recording demo... (F6 to stop)")
+    }
+}
+
+func demo_start_playback() {
+    const data = read_file("doom_demo.lmp")
+    if data == null || data == "" {
+        println("No demo file found!")
+        return
+    }
+    const lines = split(data, "\n")
+    if len(lines) < 2 {
+        println("Invalid demo file!")
+        return
+    }
+    const header = split(lines[0], ",")
+    const ep = to_int(header[0])
+    const mi = to_int(header[1])
+    const sk = to_int(header[2])
+    game_new(ep, mi, sk)
+    demo_cmds = []
+    let di = 1
+    while di < len(lines) {
+        const parts = split(lines[di], ",")
+        di = di + 1
+        if len(parts) < 5 { continue }
+        demo_cmds.push({
+            "forward": to_int(parts[0]),
+            "side": to_int(parts[1]),
+            "turn": to_int(parts[2]),
+            "run": to_int(parts[3]) != 0,
+            "fire": to_int(parts[4]) != 0
+        })
+    }
+    demo_playing = true
+    demo_play_idx = 0
+    println(f"Playing demo ({len(demo_cmds)} tics)")
 }
 
 func game_build_cmd() {
-    let cmd = {"forward": 0, "side": 0, "turn": 0, "run": false, "fire": false}
-    if key_pressed(SC_W) || key_pressed(SC_UP) { cmd["forward"] = 1 }
-    if key_pressed(SC_S) || key_pressed(SC_DOWN) { cmd["forward"] = -1 }
-    if key_pressed(SC_A) { cmd["side"] = -1 }
-    if key_pressed(SC_D) { cmd["side"] = 1 }
-    if key_pressed(SC_LEFT) { cmd["turn"] = ANG45 / 4 }
-    if key_pressed(SC_RIGHT) { cmd["turn"] = -(ANG45 / 4) }
-    if key_pressed(SC_LSHIFT) { cmd["run"] = true }
+    // Controls matching original DOOM (g_game.c G_BuildTiccmd):
+    // Arrow keys: forward/back/turn, comma/period: strafe, shift: run, ctrl: fire
+    // Alt + left/right: strafe instead of turn
+    let cmd = {"forward": 0, "side": 0, "turn": 0, "run": false, "fire": false, "use": false}
+    const run = key_pressed(SC_LSHIFT)
+    const strafe_mod = key_pressed(SC_LALT)
+    cmd["run"] = run
+
+    // Forward/backward (arrow up/down)
+    if key_pressed(SC_UP) { cmd["forward"] = if run { 50 } else { 25 } }
+    if key_pressed(SC_DOWN) { cmd["forward"] = if run { -50 } else { -25 } }
+
+    // Turn or strafe (arrow left/right)
+    if strafe_mod {
+        // Alt held: arrows strafe
+        if key_pressed(SC_LEFT) { cmd["side"] = if run { -40 } else { -24 } }
+        if key_pressed(SC_RIGHT) { cmd["side"] = if run { 40 } else { 24 } }
+    } else {
+        // Normal: arrows turn
+        if key_pressed(SC_LEFT) { cmd["turn"] = if run { 1280 } else { 640 } }
+        if key_pressed(SC_RIGHT) { cmd["turn"] = if run { -1280 } else { -640 } }
+    }
+
+    // Dedicated strafe keys (comma/period)
+    if key_pressed(SC_COMMA) { cmd["side"] = if run { -40 } else { -24 } }
+    if key_pressed(SC_PERIOD) { cmd["side"] = if run { 40 } else { 24 } }
+
     if key_pressed(SC_LCTRL) { cmd["fire"] = true }
+    if key_pressed(SC_SPACE) { cmd["use"] = true }
     cmd
 }
 
 func game_ticker() {
     match game_state {
         GS_LEVEL => {
-            const cmd = game_build_cmd()
+            let cmd = null
+            if demo_playing {
+                if demo_play_idx < len(demo_cmds) {
+                    cmd = demo_cmds[demo_play_idx]
+                    demo_play_idx = demo_play_idx + 1
+                } else {
+                    demo_playing = false
+                    println("Demo playback finished")
+                    cmd = game_build_cmd()
+                }
+            } else {
+                cmd = game_build_cmd()
+            }
+            if demo_recording {
+                demo_cmds.push({"forward": cmd["forward"], "side": cmd["side"], "turn": cmd["turn"], "run": cmd["run"], "fire": cmd["fire"]})
+            }
             player_attacking = cmd["fire"]
             player_think(cmd)
             things_run_thinkers()
@@ -147,6 +317,7 @@ func game_ticker() {
             weapon_tick()
             game_check_pickups()
             game_check_linedef_triggers()
+            texture_update_anims(game_tic)
             sound_update()
             game_level_time = game_level_time + 1
         },
@@ -168,27 +339,8 @@ func game_render() {
             if hud_automap {
                 automap_draw()
             } else {
-                r2_render_player_view()
-                // Copy r2 framebuffer to r_framebuffer for sprites + HUD
-                let cpi = 0
-                while cpi < SCREENWIDTH * SCREENHEIGHT {
-                    r_framebuffer[cpi] = r2_fb[cpi]
-                    cpi = cpi + 1
-                }
-                // Render sprites on top of the 3D view
-                // Copy render2's occlusion data for sprite clipping
-                cpi = 0
-                while cpi < SCREENWIDTH {
-                    r_ceilingclip[cpi] = r2_ceil_ocl[cpi]
-                    r_floorclip[cpi] = r2_floor_ocl[cpi]
-                    // r_occlusion doesn't exist in render2 — initialize to 0 (not occluded)
-                    // Sprites will clip against ceiling/floor bounds instead
-                    if len(r_occlusion) > cpi { r_occlusion[cpi] = 0 }
-                    cpi = cpi + 1
-                }
-                r_vissprites = []
-                things_add_vissprites()
-                r_draw_vissprites()
+                // Use the traditional DOOM renderer (1:1 port)
+                render_player_view()
             }
             hud_draw()
         },

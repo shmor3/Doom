@@ -28,7 +28,6 @@ func map_load(episode, mission) {
     map_load_things(episode, mission)
     map_load_blockmap(episode, mission)
     map_load_reject(episode, mission)
-    println(f"Map E{episode}M{mission}: {map_num_vertexes} verts, {map_num_linedefs} lines, {map_num_sectors} sectors, {map_num_nodes} nodes, {map_num_things} things")
 }
 
 func map_load_vertexes(ep, mi) {

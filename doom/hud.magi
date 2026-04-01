@@ -200,12 +200,16 @@ func hud_draw_small_num(x, y, value) {
 }
 
 func hud_blit_patch(x, y, patch) {
+    // Matching original DOOM v_video.c V_DrawPatch exactly
     if patch == null { return }
+    // Adjust position by patch origin offsets (V_DrawPatch lines 20-21)
+    let dx = x - patch["leftoffset"]
+    let dy = y - patch["topoffset"]
+    const data = patch["data"]
     let col = 0
     while col < patch["width"] {
-        const sx = x + col
+        const sx = dx + col
         if sx >= 0 && sx < SCREENWIDTH {
-            const data = patch["data"]
             const col_ofs = read_i32(data, 8 + col * 4)
             let post_ofs = col_ofs
             while post_ofs < len(data) {
@@ -214,8 +218,7 @@ func hud_blit_patch(x, y, patch) {
                 const length = data[post_ofs + 1]
                 let j = 0
                 while j < length {
-                    const dy = topdelta + j
-                    const sy = y + dy
+                    const sy = dy + topdelta + j
                     if sy >= 0 && sy < SCREENHEIGHT {
                         r_framebuffer[sy * SCREENWIDTH + sx] = data[post_ofs + 3 + j]
                     }
@@ -287,7 +290,10 @@ func automap_draw() {
     const scale = FRACUNIT / 4
     const cx = VIEWWIDTH / 2
     const cy = VIEWHEIGHT / 2
-    for line in map_linedefs {
+    let _ami = 0
+    while _ami < len(map_linedefs) {
+        const line = map_linedefs[_ami]
+        _ami = _ami + 1
         if (line["flags"] & ML_DONTDRAW) != 0 && (player_powers[pw_allmap] == 0) { continue }
         const x1 = cx + fixed_to_int(fixed_mul(line["v1"]["x"] - player_x, scale))
         const y1 = cy - fixed_to_int(fixed_mul(line["v1"]["y"] - player_y, scale))
@@ -305,7 +311,10 @@ func automap_draw() {
         am_draw_line(x1, y1, x2, y2, color)
     }
     am_draw_arrow(cx, cy)
-    for mobj in mobj_list {
+    let _amj = 0
+    while _amj < len(mobj_list) {
+        const mobj = mobj_list[_amj]
+        _amj = _amj + 1
         if mobj["health"] <= 0 && (mobj["flags"] & MF_CORPSE) == 0 { continue }
         const tx = cx + fixed_to_int(fixed_mul(mobj["x"] - player_x, scale))
         const ty = cy - fixed_to_int(fixed_mul(mobj["y"] - player_y, scale))
@@ -473,7 +482,10 @@ func finale_draw(ep) {
     const text = if ep >= 1 && ep <= 3 { texts[ep - 1] } else { "You won!" }
     let y = 10
     const lines = text.split("\n")
-    for line in lines {
+    let _li = 0
+    while _li < len(lines) {
+        const line = lines[_li]
+        _li = _li + 1
         hud_draw_text(10, y, line)
         y = y + 12
     }

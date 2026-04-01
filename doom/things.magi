@@ -163,9 +163,12 @@ func things_spawn_map() {
     mobj_list = []
     mobj_id_counter = 0
     let player_thing = null
-    for thing in map_things {
+    let thing_idx = 0
+    while thing_idx < len(map_things) {
+        const thing = map_things[thing_idx]
         const ttype = thing["type"]
         const opts = thing["options"]
+        thing_idx = thing_idx + 1
         if (opts & MTF_NORMAL) == 0 && ttype != 1 && ttype != 11 { continue }
         if ttype == 1 {
             player_thing = thing
@@ -173,7 +176,7 @@ func things_spawn_map() {
         }
         const mobj = mobj_spawn(thing["x"], thing["y"], ttype)
         if mobj != null {
-            mobj["angle"] = thing["angle"] * ANG45 / 45
+            mobj["angle"] = thing["angle"] * 0x20000000 / 45
             if (opts & MTF_AMBUSH) != 0 {
                 mobj["flags"] = mobj["flags"] | MF_AMBUSH
             }
@@ -184,7 +187,6 @@ func things_spawn_map() {
     } else {
         player_spawn(0, 0, 0)
     }
-    println(f"Spawned {len(mobj_list)} things, player at ({fixed_to_int(player_x)}, {fixed_to_int(player_y)})")
 }
 
 func things_run_thinkers() {
@@ -199,7 +201,10 @@ func things_run_thinkers() {
 }
 
 func things_add_vissprites() {
-    for mobj in mobj_list {
+    let vi = 0
+    while vi < len(mobj_list) {
+        const mobj = mobj_list[vi]
+        vi = vi + 1
         if mobj["state"] == null { continue }
         if mobj["health"] <= 0 && (mobj["flags"] & MF_CORPSE) == 0 { continue }
         const dx = mobj["x"] - r_viewx
@@ -211,28 +216,4 @@ func things_add_vissprites() {
     }
 }
 
-let game_states = []
-let game_random_idx = 0
-const random_table = [
-    0, 8, 109, 220, 222, 241, 149, 107, 75, 248, 254, 140, 16, 66, 74, 21,
-    211, 47, 80, 242, 154, 27, 205, 128, 161, 89, 77, 36, 95, 110, 85, 48,
-    212, 140, 211, 249, 22, 79, 200, 50, 28, 188, 52, 140, 202, 120, 68, 145,
-    62, 70, 184, 190, 91, 197, 152, 224, 149, 104, 25, 178, 252, 182, 202, 182,
-    141, 197, 4, 81, 181, 242, 145, 42, 39, 227, 156, 198, 225, 193, 219, 93,
-    122, 175, 249, 0, 175, 143, 70, 239, 46, 246, 163, 53, 163, 109, 168, 135,
-    2, 235, 25, 92, 20, 145, 138, 77, 69, 166, 78, 176, 173, 212, 166, 113,
-    94, 161, 41, 50, 239, 49, 111, 164, 70, 60, 2, 37, 171, 75, 136, 156,
-    11, 56, 42, 146, 138, 229, 73, 146, 77, 61, 98, 196, 135, 106, 63, 197,
-    195, 86, 96, 203, 113, 101, 170, 247, 181, 113, 80, 250, 108, 7, 255, 237,
-    129, 226, 79, 107, 112, 166, 103, 241, 24, 223, 239, 120, 198, 58, 60, 82,
-    128, 3, 184, 66, 143, 224, 145, 224, 81, 206, 163, 45, 63, 90, 168, 114,
-    59, 33, 159, 95, 28, 139, 123, 98, 125, 196, 15, 70, 194, 253, 54, 14,
-    109, 226, 71, 17, 161, 93, 186, 87, 244, 138, 20, 52, 123, 204, 26, 60,
-    98, 55, 75, 185, 120, 252, 48, 196, 243, 150, 8, 89, 38, 169, 213, 6,
-    30, 123, 100, 134, 138, 212, 112, 211, 173, 15, 32, 145, 44, 11, 9, 186
-]
-
-func random_int(max) {
-    game_random_idx = (game_random_idx + 1) & 255
-    random_table[game_random_idx] % max
-}
+// game_states, game_random_idx, random_table, random_int defined in tables.magi

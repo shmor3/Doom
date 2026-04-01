@@ -180,16 +180,19 @@ func weapon_fire_bfg() {
 func weapon_melee_attack(damage, range) {
     let closest = null
     let closest_dist = range
-    for mobj in mobj_list {
+    let _mi = 0
+    while _mi < len(mobj_list) {
+        const mobj = mobj_list[_mi]
+        _mi = _mi + 1
         if (mobj["flags"] & MF_SHOOTABLE) == 0 { continue }
         if mobj["health"] <= 0 { continue }
         const dist = point_to_dist(player_x, player_y, mobj["x"], mobj["y"])
         if dist < closest_dist {
             const ang = point_to_angle_2(player_x, player_y, mobj["x"], mobj["y"])
             let diff = ang - player_angle
-            while diff > ANG180 { diff = diff - ANG360 }
-            while diff < -ANG180 { diff = diff + ANG360 }
-            if abs(diff) < ANG90 {
+            while diff > 0x80000000 { diff = diff - 0x100000000 }
+            while diff < -0x80000000 { diff = diff + 0x100000000 }
+            if abs(diff) < 0x40000000 {
                 closest = mobj
                 closest_dist = dist
             }
@@ -203,15 +206,18 @@ func weapon_melee_attack(damage, range) {
 func weapon_hitscan(angle, range, damage) {
     let closest = null
     let closest_dist = range
-    for mobj in mobj_list {
+    let _hi = 0
+    while _hi < len(mobj_list) {
+        const mobj = mobj_list[_hi]
+        _hi = _hi + 1
         if (mobj["flags"] & MF_SHOOTABLE) == 0 { continue }
         if mobj["health"] <= 0 { continue }
         const dist = point_to_dist(player_x, player_y, mobj["x"], mobj["y"])
         if dist >= range { continue }
         const ang = point_to_angle_2(player_x, player_y, mobj["x"], mobj["y"])
         let diff = ang - angle
-        while diff > ANG180 { diff = diff - ANG360 }
-        while diff < -ANG180 { diff = diff + ANG360 }
+        while diff > 0x80000000 { diff = diff - 0x100000000 }
+        while diff < -0x80000000 { diff = diff + 0x100000000 }
         const half_angle = point_to_angle_2(0, 0, dist, mobj["radius"])
         if abs(diff) < half_angle && dist < closest_dist {
             closest = mobj

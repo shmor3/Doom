@@ -237,14 +237,14 @@ func a_skelfist(actor) {
 func a_fatattack1(actor) {
     if actor["target"] == null { return }
     a_face_target(actor)
-    actor["angle"] = actor["angle"] + ANG45 / 8
+    actor["angle"] = actor["angle"] + 0x20000000 / 8
     p_spawn_missile_type(actor, MT_FATSHOT)
 }
 
 func a_fatattack2(actor) {
     if actor["target"] == null { return }
     a_face_target(actor)
-    actor["angle"] = actor["angle"] - ANG45 / 8
+    actor["angle"] = actor["angle"] - 0x20000000 / 8
     p_spawn_missile_type(actor, MT_FATSHOT)
 }
 
@@ -252,12 +252,15 @@ func a_fatattack3(actor) {
     if actor["target"] == null { return }
     a_face_target(actor)
     p_spawn_missile_type(actor, MT_FATSHOT)
-    actor["angle"] = actor["angle"] + ANG45 / 8
+    actor["angle"] = actor["angle"] + 0x20000000 / 8
     p_spawn_missile_type(actor, MT_FATSHOT)
 }
 
 func a_vilechase(actor) {
-    for mobj in mobj_list {
+    let _vi = 0
+    while _vi < len(mobj_list) {
+        const mobj = mobj_list[_vi]
+        _vi = _vi + 1
         if (mobj["flags"] & MF_CORPSE) == 0 { continue }
         if mobj["info"] == null { continue }
         if mobj["info"]["raisestate"] < 0 { continue }
@@ -310,9 +313,9 @@ func a_painshootskull(actor, angle) {
 
 func a_paindie(actor) {
     a_fall(actor)
-    a_painshootskull(actor, actor["angle"] + ANG90)
-    a_painshootskull(actor, actor["angle"] + ANG180)
-    a_painshootskull(actor, actor["angle"] + ANG270)
+    a_painshootskull(actor, actor["angle"] + 0x40000000)
+    a_painshootskull(actor, actor["angle"] + 0x80000000)
+    a_painshootskull(actor, actor["angle"] + 0xC0000000)
 }
 
 func a_fall(actor) {
@@ -332,11 +335,17 @@ func a_xscream(actor) {
 func a_keendie(actor) {
     a_fall(actor)
     let all_dead = true
-    for mobj in mobj_list {
+    let _ki = 0
+    while _ki < len(mobj_list) {
+        const mobj = mobj_list[_ki]
+        _ki = _ki + 1
         if mobj["type"] == actor["type"] && mobj["health"] > 0 { all_dead = false }
     }
     if all_dead {
-        for line in map_linedefs {
+        let _kj = 0
+        while _kj < len(map_linedefs) {
+            const line = map_linedefs[_kj]
+            _kj = _kj + 1
             if line["tag"] == 666 { door_open_tagged(666) }
         }
     }
@@ -345,13 +354,19 @@ func a_keendie(actor) {
 func a_bossdeath(actor) {
     if game_episode == 1 && game_mission == 8 {
         let all_dead = true
-        for mobj in mobj_list {
+        let _bi = 0
+        while _bi < len(mobj_list) {
+            const mobj = mobj_list[_bi]
+            _bi = _bi + 1
             if mobj["type"] == actor["type"] && mobj != actor && mobj["health"] > 0 {
                 all_dead = false
             }
         }
         if all_dead {
-            for line in map_linedefs {
+            let _bj = 0
+            while _bj < len(map_linedefs) {
+                const line = map_linedefs[_bj]
+                _bj = _bj + 1
                 if line["tag"] == 666 {
                     floor_lower_to_lowest_tagged(666)
                 }
@@ -418,9 +433,9 @@ func a_tracer(actor) {
     if actor["target"] == null { return }
     const exact = point_to_angle_2(actor["x"], actor["y"], player_x, player_y)
     let diff = exact - actor["angle"]
-    while diff > ANG180 { diff = diff - ANG360 }
-    while diff < -ANG180 { diff = diff + ANG360 }
-    const turn_amount = ANG45 / 16
+    while diff > 0x80000000 { diff = diff - 0x100000000 }
+    while diff < -0x80000000 { diff = diff + 0x100000000 }
+    const turn_amount = 0x20000000 / 16
     if diff > 0 {
         if diff > turn_amount { actor["angle"] = actor["angle"] + turn_amount }
         else { actor["angle"] = exact }
@@ -555,13 +570,16 @@ func p_line_attack(source, angle, range, slope, damage) {
     if dist < range {
         const ang_to_player = point_to_angle_2(source["x"], source["y"], player_x, player_y)
         let diff = ang_to_player - angle
-        while diff > ANG180 { diff = diff - ANG360 }
-        while diff < -ANG180 { diff = diff + ANG360 }
-        if abs(diff) < ANG45 / 2 {
+        while diff > 0x80000000 { diff = diff - 0x100000000 }
+        while diff < -0x80000000 { diff = diff + 0x100000000 }
+        if abs(diff) < 0x20000000 / 2 {
             player_damage(damage, source)
         }
     }
-    for mobj in mobj_list {
+    let _ri = 0
+    while _ri < len(mobj_list) {
+        const mobj = mobj_list[_ri]
+        _ri = _ri + 1
         if (mobj["flags"] & MF_SHOOTABLE) == 0 { continue }
         if mobj["health"] <= 0 { continue }
         if mobj == source { continue }
@@ -569,8 +587,8 @@ func p_line_attack(source, angle, range, slope, damage) {
         if d >= range { continue }
         const a = point_to_angle_2(source["x"], source["y"], mobj["x"], mobj["y"])
         let adiff = a - angle
-        while adiff > ANG180 { adiff = adiff - ANG360 }
-        while adiff < -ANG180 { adiff = adiff + ANG360 }
+        while adiff > 0x80000000 { adiff = adiff - 0x100000000 }
+        while adiff < -0x80000000 { adiff = adiff + 0x100000000 }
         const half_a = point_to_angle_2(0, 0, d, mobj["radius"])
         if abs(adiff) < half_a {
             mobj_damage(mobj, null, source, damage)
@@ -613,7 +631,10 @@ func player_mobj_ref() {
 }
 
 func door_open_tagged(tag) {
-    for sector in map_sectors {
+    let _oi = 0
+    while _oi < len(map_sectors) {
+        const sector = map_sectors[_oi]
+        _oi = _oi + 1
         if sector["tag"] == tag {
             door_open_sector(sector, VDOORSPEED, -1)
         }
@@ -621,7 +642,10 @@ func door_open_tagged(tag) {
 }
 
 func floor_lower_to_lowest_tagged(tag) {
-    for sector in map_sectors {
+    let _fi = 0
+    while _fi < len(map_sectors) {
+        const sector = map_sectors[_fi]
+        _fi = _fi + 1
         if sector["tag"] == tag {
             const target = find_lowest_floor_around(sector)
             door_thinkers.push({

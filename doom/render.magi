@@ -19,9 +19,9 @@
 // Framebuffer: 320x200 palette-indexed pixels
 let r_framebuffer = []
 
-// Per-column occlusion tracking (solidsegs system)
-// 0 = open, 1 = fully occluded by a solid wall
-let r_occlusion = []
+// Solidsegs: sorted list of occluded column ranges [{first, last}, ...]
+// Starts with sentinels: {-MAX, -1} and {VIEWWIDTH, MAX}
+let r_solidsegs = []
 
 // Per-column clip bounds for sprite/two-sided line clipping
 // r_floorclip[x]   = lowest open row (exclusive) for this column
@@ -42,9 +42,11 @@ let r_centerx = 0
 let r_centery = 0
 let r_projection = 0
 
-// Angle-to-screen-column lookup table (r_main.c: viewangletox equivalent)
+// Angle-to-screen-column lookup tables
 // r_xtoviewangle[0..VIEWWIDTH] maps screen column to view-relative angle
+// r_viewangletox[0..FINEANGLES/2] maps fine angle to screen column
 let r_xtoviewangle = []
+let r_viewangletox = []
 
 // Per-column distance scale cache (computed during wall rendering)
 let r_screenheightarray = []
@@ -144,15 +146,41 @@ func render_init() {
     r_centery = VIEWHEIGHT / 2
     r_projection = r_centerx << FRACBITS
 
-    // Build xtoviewangle table (r_main.c: R_InitTextureMapping)
-    // Maps each screen column to the view-relative angle it represents
+    // Build xtoviewangle using atan (simpler, avoids tangent table dependency)
     r_xtoviewangle = []
     i = 0
     while i < VIEWWIDTH + 1 {
         const f = atan((i - r_centerx + 0.5) / (r_centerx * 1.0))
         const pi = 3.14159265358979323846
-        const a = floor(-f * (ANG180 * 1.0) / pi + 0.5)
+        const a = floor(-f * (0x80000000 * 1.0) / pi + 0.5)
         r_xtoviewangle.push(a)
+        i = i + 1
+    }
+
+    // Build viewangletox from finetangent (for R_AddLine angle→column conversion)
+    const focallength = r_centerx << FRACBITS
+    r_viewangletox = []
+    i = 0
+    while i < FINEANGLES / 2 {
+        const t_val = finetangent[i]
+        let t = 0
+        if t_val > 2 * FRACUNIT {
+            t = -1
+        } else if t_val < -(2 * FRACUNIT) {
+            t = VIEWWIDTH + 1
+        } else {
+            t = r_centerx - fixed_to_int(fixed_mul(t_val, focallength))
+            if t < -1 { t = -1 }
+            if t > VIEWWIDTH + 1 { t = VIEWWIDTH + 1 }
+        }
+        r_viewangletox.push(t)
+        i = i + 1
+    }
+    // Clamp fencepost
+    i = 0
+    while i < len(r_viewangletox) {
+        if r_viewangletox[i] == -1 { r_viewangletox[i] = 0 }
+        if r_viewangletox[i] == VIEWWIDTH + 1 { r_viewangletox[i] = VIEWWIDTH }
         i = i + 1
     }
 
@@ -171,7 +199,7 @@ func render_init() {
     i = 0
     while i < VIEWWIDTH {
         const angle = r_xtoviewangle[i]
-        const cosval = fine_cosine(angle & (ANG360 - 1))
+        const cosval = fine_cosine(angle & (0x100000000 - 1))
         if cosval != 0 {
             r_distscale[i] = fixed_div(FRACUNIT, abs(cosval))
         } else {
@@ -202,16 +230,12 @@ func render_player_view() {
     r_viewcos = fine_cosine(r_viewangle)
     r_extralight = player_extralight
 
-    // R_ClearClipSegs: initialize the clip range list
-    // Start with a single open range spanning the full screen
-    r_clipsegs = []
-    r_clipsegs.push({"first": -2147483647, "last": -1})
-    r_clipsegs.push({"first": VIEWWIDTH, "last": 2147483647})
+    // R_ClearClipSegs: initialize solidsegs with sentinels
+    r_init_solidsegs()
 
     // Clear per-column state
     let i = 0
     while i < SCREENWIDTH {
-        r_occlusion[i] = 0
         r_floorclip[i] = VIEWHEIGHT
         r_ceilingclip[i] = -1
         r_wallscale[i] = 0
@@ -239,11 +263,38 @@ func render_player_view() {
     bsp_new_validcount()
     r_render_bsp_node(map_num_nodes - 1, r_render_subsector)
 
+    // Post-pass: fill uncovered floor/ceiling columns
+    // For each column, if there's open space above/below the wall, draw floor/ceiling
+    // using the first visible sector (player's current sector)
+    const player_ss = map_get_subsector(r_viewx, r_viewy)
+    let player_sector = null
+    if player_ss < map_num_subsectors {
+        player_sector = map_subsectors[player_ss]["sector"]
+    }
+    if player_sector != null {
+        let px = 0
+        while px < SCREENWIDTH {
+            const ceil_top = r_ceilingclip[px] + 1
+            const floor_bot = r_floorclip[px] - 1
+            // Draw ceiling for uncovered top area
+            if ceil_top < VIEWHEIGHT / 2 {
+                const sky = player_sector["ceilingpic"] == "F_SKY1"
+                r_draw_ceiling_plane(px, 0, ceil_top, player_sector, 0, 0, sky)
+            }
+            // Draw floor for uncovered bottom area
+            if floor_bot > VIEWHEIGHT / 2 {
+                r_draw_floor_plane(px, floor_bot, VIEWHEIGHT - 1, player_sector, 0, 0)
+            }
+            px = px + 1
+        }
+    }
+
     // R_DrawPlanes: render all visplanes (floors and ceilings)
     r_draw_all_visplanes()
 
     // R_DrawMasked: render sprites (deferred from BSP traversal)
     r_draw_vissprites()
+
 }
 
 // =========================================================================
@@ -267,19 +318,34 @@ func render_clear_fb() {
 // =========================================================================
 
 func r_render_subsector(ssnum) {
+    // Matching original DOOM r_bsp.c R_Subsector
     if ssnum < 0 || ssnum >= map_num_subsectors { return }
     const ss = map_subsectors[ssnum]
     const sector = ss["sector"]
     if sector == null { return }
 
-    // Add sprites from this subsector to vissprite list
+    // Create floor visplane if floor is visible (below viewpoint)
+    if sector["floorheight"] < r_viewz {
+        r_find_visplane(sector["floorheight"], sector["floorpic"],
+                        sector["lightlevel"], 0, VIEWWIDTH - 1)
+    }
+
+    // Create ceiling visplane if ceiling is visible (above viewpoint or sky)
+    if sector["ceilingheight"] > r_viewz || sector["ceilingpic"] == "F_SKY1" {
+        r_find_visplane(sector["ceilingheight"], sector["ceilingpic"],
+                        sector["lightlevel"], 0, VIEWWIDTH - 1)
+    }
+
+    // Collect sprites from this subsector
     r_add_subsector_sprites(ssnum, sector)
 
-    // Process each seg in this subsector
+    // Render all segs in this subsector
     let i = 0
-    while i < ss["numlines"] {
-        const seg_idx = ss["firstline"] + i
-        if seg_idx < map_num_segs {
+    const numlines = ss["numlines"]
+    const firstline = ss["firstline"]
+    while i < numlines {
+        const seg_idx = firstline + i
+        if seg_idx >= 0 && seg_idx < map_num_segs {
             r_add_line(map_segs[seg_idx])
         }
         i = i + 1
@@ -295,7 +361,10 @@ func r_render_subsector(ssnum) {
 // =========================================================================
 
 func r_add_subsector_sprites(ssnum, sector) {
-    for mobj in mobj_list {
+    let ssi = 0
+    while ssi < len(mobj_list) {
+        const mobj = mobj_list[ssi]
+        ssi = ssi + 1
         if mobj["state"] == null { continue }
         if mobj["health"] <= 0 && (mobj["flags"] & MF_CORPSE) == 0 { continue }
         if mobj["subsector"] == ssnum || mobj["sector"] == sector {
@@ -330,109 +399,172 @@ func r_add_subsector_sprites(ssnum, sector) {
 // 5. Render the wall columns
 // =========================================================================
 
+// Saved rw_angle1 for R_StoreWallRange (set in r_add_line, used in r_draw_seg)
+let r_cur_rw_angle1 = 0
+let r_cur_seg = null
+
 func r_add_line(seg) {
     const v1 = seg["v1"]
     const v2 = seg["v2"]
 
-    // R_PointToAngle: compute angles from viewpoint to seg endpoints
-    const angle1 = r_point_to_angle(r_viewx, r_viewy, v1["x"], v1["y"]) - r_viewangle
-    const angle2 = r_point_to_angle(r_viewx, r_viewy, v2["x"], v2["y"]) - r_viewangle
+    // R_PointToAngle: compute WORLD angles from viewpoint to seg endpoints
+    let angle1 = r_point_to_angle(r_viewx, r_viewy, v1["x"], v1["y"])
+    let angle2 = r_point_to_angle(r_viewx, r_viewy, v2["x"], v2["y"])
 
-    // Compute the angular span of this seg
+    // Backface cull: span must be positive and < 180 degrees
     const span = angle1 - angle2
-
-    // Back-facing check: if span <= 0, the seg faces away from us
     if span <= 0 { return }
+    if span >= 0x80000000 { return }
 
-    // If the span covers more than 180 degrees, it wraps around --
-    // this means we are behind the seg
-    if span >= ANG180 { return }
+    // Save global angle before view-relative conversion
+    r_cur_rw_angle1 = angle1
+    r_cur_seg = seg
 
-    // Clip against the field of view using clipangle
-    let rw_angle1 = angle1
+    // Convert to view-relative
+    angle1 = angle1 - r_viewangle
+    angle2 = angle2 - r_viewangle
 
+    // Clip to FOV
     let tspan = angle1 + clipangle
     if tspan > 2 * clipangle {
         tspan = tspan - 2 * clipangle
-        // If the overshoot exceeds the span, the seg is entirely outside FOV
         if tspan >= span { return }
-        rw_angle1 = clipangle
+        angle1 = clipangle
     }
-
     tspan = clipangle - angle2
     if tspan > 2 * clipangle {
         tspan = tspan - 2 * clipangle
         if tspan >= span { return }
+        angle2 = 0 - clipangle
     }
 
-    // R_AngleToX: convert view-relative angles to screen columns
-    const x1 = r_angle_to_x(rw_angle1 + r_viewangle)
-    let x2 = r_angle_to_x(angle2 + r_viewangle)
+    // Convert clipped angles to screen columns using viewangletox
+    const a1idx = ((angle1 + 0x40000000) >> ANGLETOFINESHIFT) & (FINEANGLES / 2 - 1)
+    const a2idx = ((angle2 + 0x40000000) >> ANGLETOFINESHIFT) & (FINEANGLES / 2 - 1)
+    let x1 = if a1idx >= 0 && a1idx < len(r_viewangletox) { r_viewangletox[a1idx] } else { 0 }
+    let x2 = if a2idx >= 0 && a2idx < len(r_viewangletox) { r_viewangletox[a2idx] } else { VIEWWIDTH }
 
-    // Degenerate seg (zero-width on screen)
     if x1 == x2 { return }
-
-    // x2 is exclusive, convert to inclusive
     x2 = x2 - 1
 
-    // Off-screen rejection
-    if x1 >= VIEWWIDTH || x2 < 0 { return }
-
-    // Clamp to screen bounds
-    const clipped_x1 = if x1 < 0 { 0 } else { x1 }
-    const clipped_x2 = if x2 >= VIEWWIDTH { VIEWWIDTH - 1 } else { x2 }
-
-    // R_ClipSolidWallSegment / R_ClipPassWallSegment:
-    // Check if this range is entirely occluded by existing solid segs
-    let all_occluded = true
-    let chk = clipped_x1
-    while chk <= clipped_x2 {
-        if r_occlusion[chk] == 0 {
-            all_occluded = false
-            chk = clipped_x2 + 1
-        }
-        chk = chk + 1
-    }
-    if all_occluded { return }
-
-    // Determine if this is a solid or pass-through seg
-    const line = seg["linedef"]
+    // Determine solid vs pass-through
     const backsector = seg["backsector"]
     let is_solid = false
-
     if backsector == null {
-        // One-sided line: always solid
         is_solid = true
     } else {
         const frontsector = seg["frontsector"]
         if frontsector != null {
-            // Closed door check: back ceiling <= front floor
-            if backsector["ceilingheight"] <= frontsector["floorheight"] {
-                is_solid = true
-            }
-            // Closed from below: back floor >= front ceiling
-            if backsector["floorheight"] >= frontsector["ceilingheight"] {
-                is_solid = true
-            }
-            // Same-height window with no texture: not solid
-            if backsector["ceilingheight"] == frontsector["ceilingheight"] &&
-               backsector["floorheight"] == frontsector["floorheight"] {
-                is_solid = false
-            }
+            if backsector["ceilingheight"] <= frontsector["floorheight"] { is_solid = true }
+            if backsector["floorheight"] >= frontsector["ceilingheight"] { is_solid = true }
         }
     }
 
-    // Render the seg columns
-    r_draw_seg(seg, clipped_x1, clipped_x2, rw_angle1)
-
-    // Mark occluded columns for solid segs
+    // Dispatch to solidsegs clipper
     if is_solid {
-        let mx = clipped_x1
-        while mx <= clipped_x2 {
-            r_occlusion[mx] = 1
-            mx = mx + 1
+        r_clip_solid_wall(x1, x2)
+    } else {
+        r_clip_pass_wall(x1, x2)
+    }
+}
+
+// =========================================================================
+// R_ClipSolidWallSegment — clips and renders visible sub-ranges,
+// then merges the occluded range into solidsegs.
+// Uses parallel arrays for first/last (avoids map/splice overhead).
+// =========================================================================
+
+let r_ss_first = []
+let r_ss_last = []
+let r_ss_count = 0
+
+func r_init_solidsegs() {
+    r_ss_first = [-2147483647, VIEWWIDTH]
+    r_ss_last = [-1, 2147483647]
+    r_ss_count = 2
+}
+
+func r_clip_solid_wall(first, last) {
+    let si = 0
+    while si < r_ss_count && r_ss_last[si] < first - 1 { si = si + 1 }
+    if si >= r_ss_count { return }
+
+    if first < r_ss_first[si] {
+        if last < r_ss_first[si] - 1 {
+            // Entirely visible — render and insert new entry
+            r_draw_seg(r_cur_seg, first, last, r_cur_rw_angle1)
+            // Insert at si: shift everything right
+            r_ss_first.push(0)
+            r_ss_last.push(0)
+            let j = r_ss_count
+            while j > si { r_ss_first[j] = r_ss_first[j - 1]; r_ss_last[j] = r_ss_last[j - 1]; j = j - 1 }
+            r_ss_first[si] = first
+            r_ss_last[si] = last
+            r_ss_count = r_ss_count + 1
+            return
+        }
+        // Fragment above start
+        r_draw_seg(r_cur_seg, first, r_ss_first[si] - 1, r_cur_rw_angle1)
+        r_ss_first[si] = first
+    }
+
+    if last <= r_ss_last[si] { return }
+
+    let next = si
+    while next + 1 < r_ss_count && last >= r_ss_first[next + 1] - 1 {
+        r_draw_seg(r_cur_seg, r_ss_last[next] + 1, r_ss_first[next + 1] - 1, r_cur_rw_angle1)
+        next = next + 1
+        if last <= r_ss_last[next] {
+            r_ss_last[si] = r_ss_last[next]
+            // Remove entries si+1..next by shifting left
+            let rem = next - si
+            if rem > 0 {
+                let k = si + 1
+                while k + rem < r_ss_count { r_ss_first[k] = r_ss_first[k + rem]; r_ss_last[k] = r_ss_last[k + rem]; k = k + 1 }
+                r_ss_count = r_ss_count - rem
+            }
+            return
         }
     }
+
+    // Fragment after last
+    r_draw_seg(r_cur_seg, r_ss_last[next] + 1, last, r_cur_rw_angle1)
+    r_ss_last[si] = last
+
+    let rem2 = next - si
+    if rem2 > 0 {
+        let k = si + 1
+        while k + rem2 < r_ss_count { r_ss_first[k] = r_ss_first[k + rem2]; r_ss_last[k] = r_ss_last[k + rem2]; k = k + 1 }
+        r_ss_count = r_ss_count - rem2
+    }
+}
+
+// =========================================================================
+// R_ClipPassWallSegment — clips and renders visible sub-ranges,
+// does NOT modify solidsegs (two-sided lines don't occlude)
+// =========================================================================
+func r_clip_pass_wall(first, last) {
+    let si = 0
+    while si < r_ss_count && r_ss_last[si] < first - 1 { si = si + 1 }
+    if si >= r_ss_count { return }
+
+    if first < r_ss_first[si] {
+        if last < r_ss_first[si] - 1 {
+            r_draw_seg(r_cur_seg, first, last, r_cur_rw_angle1)
+            return
+        }
+        r_draw_seg(r_cur_seg, first, r_ss_first[si] - 1, r_cur_rw_angle1)
+    }
+
+    if last <= r_ss_last[si] { return }
+
+    while si + 1 < r_ss_count && last >= r_ss_first[si + 1] - 1 {
+        r_draw_seg(r_cur_seg, r_ss_last[si] + 1, r_ss_first[si + 1] - 1, r_cur_rw_angle1)
+        si = si + 1
+        if last <= r_ss_last[si] { return }
+    }
+
+    r_draw_seg(r_cur_seg, r_ss_last[si] + 1, last, r_cur_rw_angle1)
 }
 
 // =========================================================================
@@ -446,15 +578,15 @@ func r_angle_to_x(angle) {
     let a = angle - r_viewangle
 
     // Normalize to [-ANG180, ANG180]
-    while a > ANG180 { a = a - ANG360 }
-    while a < -ANG180 { a = a + ANG360 }
+    while a > 0x80000000 { a = a - 0x100000000 }
+    while a < -0x80000000 { a = a + 0x100000000 }
 
     // Clamp to screen edges
-    if a > ANG90 { return 0 }
-    if a < -ANG90 { return VIEWWIDTH }
+    if a > 0x40000000 { return 0 }
+    if a < -0x40000000 { return VIEWWIDTH }
 
     // Tangent projection: x = centerx - tan(angle) * projection
-    const t = fine_tangent((ANG90 - a) >> ANGLETOFINESHIFT << ANGLETOFINESHIFT)
+    const t = fine_tangent((0x40000000 - a) >> ANGLETOFINESHIFT << ANGLETOFINESHIFT)
     const x = r_centerx - fixed_mul(t, r_projection >> FRACBITS)
 
     if x < 0 { 0 } else if x > VIEWWIDTH { VIEWWIDTH } else { x }
@@ -485,287 +617,396 @@ func r_draw_seg(seg, x1, x2, rw_angle1) {
     const v1 = seg["v1"]
 
     // ---------------------------------------------------------------
-    // R_StoreWallRange: compute perpendicular distance to seg
-    // Uses the dot product of (v1 - viewpos) with the view normal
+    // R_StoreWallRange: compute perpendicular distance to seg's LINE
+    // rw_distance = hyp * sin(distangle)
+    // where distangle = ANG90 - abs(normalangle - angle_to_v1)
     // ---------------------------------------------------------------
-    const dx = v1["x"] - r_viewx
-    const dy = v1["y"] - r_viewy
-    const rw_dist = abs(fixed_mul(dx, r_viewsin) - fixed_mul(dy, r_viewcos))
-    if rw_dist <= 0 { return }
+    const seg_angle = seg["angle"]
+    const rw_normalangle = seg_angle + 0x40000000
+    const hyp = point_to_dist(r_viewx, r_viewy, v1["x"], v1["y"])
+    let offsetangle = abs(rw_normalangle - rw_angle1)
+    if offsetangle > 0x40000000 { offsetangle = 0x40000000 }
+    const distangle = 0x40000000 - offsetangle
+    const rw_distance = fixed_mul(hyp, fine_sine(distangle))
+    if rw_distance <= 0 { return }
 
-    // World-space heights relative to viewz
-    const worldfront_floor = frontsector["floorheight"] - r_viewz
-    const worldfront_ceiling = frontsector["ceilingheight"] - r_viewz
+    const flags = line["flags"]
+    const has_back = backsector != null
 
-    // Sector light level + extra light from weapon flash
+    // ---------------------------------------------------------------
+    // Calculate scale at both ends and step (R_StoreWallRange)
+    // ---------------------------------------------------------------
+    const rw_scale1 = r_scale_from_global_angle(r_viewangle + r_xtoviewangle[x1], rw_distance, rw_normalangle)
+    let rw_scalestep = 0
+    if x2 > x1 {
+        const rw_scale2 = r_scale_from_global_angle(r_viewangle + r_xtoviewangle[x2], rw_distance, rw_normalangle)
+        rw_scalestep = (rw_scale2 - rw_scale1) / (x2 - x1)
+    }
+    let rw_scale = rw_scale1
+
+    // ---------------------------------------------------------------
+    // Calculate texture boundaries and decide floor/ceiling marks
+    // ---------------------------------------------------------------
+    let worldtop = frontsector["ceilingheight"] - r_viewz
+    let worldbottom = frontsector["floorheight"] - r_viewz
+
+    const side_rowoffset = if sidedef != null { sidedef["rowoffset"] } else { 0 }
+
+    // Texture indices
+    let midtexture = 0
+    let toptexture = 0
+    let bottomtexture = 0
+    let maskedtexture = false
+
+    let rw_midtexturemid = 0
+    let rw_toptexturemid = 0
+    let rw_bottomtexturemid = 0
+
+    let markfloor = false
+    let markceiling = false
+    let segtextured = false
+
+    let worldhigh = 0
+    let worldlow = 0
+
+    const front_ceiling_sky = frontsector["ceilingpic"] == "F_SKY1"
+    let back_ceiling_sky = false
+
+    if !has_back {
+        // --- Single sided line ---
+        const midtex_idx = if sidedef != null { texture_find_index(sidedef["midtexture"]) } else { -1 }
+        if midtex_idx >= 0 { midtexture = midtex_idx + 1 }
+        markfloor = true
+        markceiling = true
+
+        if midtexture != 0 && midtex_idx >= 0 && midtex_idx < len(tex_textures) {
+            const tex = tex_textures[midtex_idx]
+            const tex_h = tex[2]
+            if (flags & ML_DONTPEGBOTTOM) != 0 {
+                // bottom of texture at bottom
+                const vtop = frontsector["floorheight"] + (tex_h << FRACBITS)
+                rw_midtexturemid = vtop - r_viewz
+            } else {
+                // top of texture at top
+                rw_midtexturemid = worldtop
+            }
+            rw_midtexturemid = rw_midtexturemid + side_rowoffset
+        }
+    } else {
+        // --- Two sided line ---
+        back_ceiling_sky = backsector["ceilingpic"] == "F_SKY1"
+        worldhigh = backsector["ceilingheight"] - r_viewz
+        worldlow = backsector["floorheight"] - r_viewz
+
+        // hack to allow height changes in outdoor areas
+        if front_ceiling_sky && back_ceiling_sky {
+            worldtop = worldhigh
+        }
+
+        // Determine markfloor
+        if worldlow != worldbottom || backsector["floorpic"] != frontsector["floorpic"] || backsector["lightlevel"] != frontsector["lightlevel"] {
+            markfloor = true
+        }
+        // Determine markceiling
+        if worldhigh != worldtop || backsector["ceilingpic"] != frontsector["ceilingpic"] || backsector["lightlevel"] != frontsector["lightlevel"] {
+            markceiling = true
+        }
+        // Closed door
+        if backsector["ceilingheight"] <= frontsector["floorheight"] || backsector["floorheight"] >= frontsector["ceilingheight"] {
+            markceiling = true
+            markfloor = true
+        }
+
+        // Top texture
+        if worldhigh < worldtop {
+            const tt_idx = if sidedef != null { texture_find_index(sidedef["toptexture"]) } else { -1 }
+            if tt_idx >= 0 {
+                toptexture = tt_idx + 1
+                const tex = tex_textures[tt_idx]
+                const tex_h = tex[2]
+                if (flags & ML_DONTPEGTOP) != 0 {
+                    rw_toptexturemid = worldtop
+                } else {
+                    const vtop = backsector["ceilingheight"] + (tex_h << FRACBITS)
+                    rw_toptexturemid = vtop - r_viewz
+                }
+                rw_toptexturemid = rw_toptexturemid + side_rowoffset
+            }
+        }
+        // Bottom texture
+        if worldlow > worldbottom {
+            const bt_idx = if sidedef != null { texture_find_index(sidedef["bottomtexture"]) } else { -1 }
+            if bt_idx >= 0 {
+                bottomtexture = bt_idx + 1
+                if (flags & ML_DONTPEGBOTTOM) != 0 {
+                    rw_bottomtexturemid = worldtop
+                } else {
+                    rw_bottomtexturemid = worldlow
+                }
+                rw_bottomtexturemid = rw_bottomtexturemid + side_rowoffset
+            }
+        }
+
+        // Masked mid texture
+        if sidedef != null {
+            const masked_idx = texture_find_index(sidedef["midtexture"])
+            if masked_idx >= 0 {
+                maskedtexture = true
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Calculate rw_offset (only needed for textured lines)
+    // ---------------------------------------------------------------
+    segtextured = midtexture != 0 || toptexture != 0 || bottomtexture != 0 || maskedtexture
+    let rw_offset = 0
+    let rw_centerangle = 0
+
+    if segtextured {
+        let texoffangle = rw_normalangle - rw_angle1
+        if texoffangle > 0x80000000 { texoffangle = 0 - texoffangle }
+        if texoffangle > 0x40000000 { texoffangle = 0x40000000 }
+        rw_offset = fixed_mul(hyp, fine_sine(texoffangle))
+        if rw_normalangle - rw_angle1 < 0x80000000 { rw_offset = 0 - rw_offset }
+        rw_offset = rw_offset + (if sidedef != null { sidedef["textureoffset"] } else { 0 }) + seg["offset"]
+        rw_centerangle = 0x40000000 + r_viewangle - rw_normalangle
+    }
+
+    // ---------------------------------------------------------------
+    // Sector light level with direction bonus + extra light
+    // ---------------------------------------------------------------
     let light = frontsector["lightlevel"] + r_extralight * 16
     if light > 255 { light = 255 }
     if light < 0 { light = 0 }
 
     // ---------------------------------------------------------------
-    // Texture indices for this seg
+    // If floor/ceiling plane on wrong side of view, skip marking
     // ---------------------------------------------------------------
-    const toptex = if sidedef != null { texture_find_index(sidedef["toptexture"]) } else { -1 }
-    const midtex = if sidedef != null { texture_find_index(sidedef["midtexture"]) } else { -1 }
-    const bottex = if sidedef != null { texture_find_index(sidedef["bottomtexture"]) } else { -1 }
-
-    // ---------------------------------------------------------------
-    // Back sector heights (for two-sided lines)
-    // ---------------------------------------------------------------
-    let has_back = backsector != null
-    let worldback_floor = 0
-    let worldback_ceiling = 0
-    if has_back {
-        worldback_floor = backsector["floorheight"] - r_viewz
-        worldback_ceiling = backsector["ceilingheight"] - r_viewz
+    if frontsector["floorheight"] >= r_viewz {
+        markfloor = false
+    }
+    if frontsector["ceilingheight"] <= r_viewz && !front_ceiling_sky {
+        markceiling = false
     }
 
     // ---------------------------------------------------------------
-    // Texture pegging flags
+    // Calculate incremental stepping values for texture edges
+    // worldtop >>= 4 and worldbottom >>= 4 (from HEIGHTBITS)
     // ---------------------------------------------------------------
-    const flags = line["flags"]
-    const dontpegtop = (flags & ML_DONTPEGTOP) != 0
-    const dontpegbottom = (flags & ML_DONTPEGBOTTOM) != 0
+    worldtop = worldtop >> 4
+    worldbottom = worldbottom >> 4
 
-    // Side texture offsets
-    const side_texoffset = if sidedef != null { sidedef["textureoffset"] } else { 0 }
-    const side_rowoffset = if sidedef != null { sidedef["rowoffset"] } else { 0 }
+    const centeryfrac4 = (r_centery << FRACBITS) >> 4
 
-    // ---------------------------------------------------------------
-    // Check if front sector is sky
-    // ---------------------------------------------------------------
-    const front_ceiling_sky = frontsector["ceilingpic"] == "F_SKY1"
-    const front_floor_pic = frontsector["floorpic"]
+    let topstep = 0 - fixed_mul(rw_scalestep, worldtop)
+    let topfrac = centeryfrac4 - fixed_mul(worldtop, rw_scale)
 
-    let back_ceiling_sky = false
+    let bottomstep = 0 - fixed_mul(rw_scalestep, worldbottom)
+    let bottomfrac = centeryfrac4 - fixed_mul(worldbottom, rw_scale)
+
+    let pixhigh = 0
+    let pixhighstep = 0
+    let pixlow = 0
+    let pixlowstep = 0
+
     if has_back {
-        back_ceiling_sky = backsector["ceilingpic"] == "F_SKY1"
+        worldhigh = worldhigh >> 4
+        worldlow = worldlow >> 4
+
+        if worldhigh < worldtop {
+            pixhigh = centeryfrac4 - fixed_mul(worldhigh, rw_scale)
+            pixhighstep = 0 - fixed_mul(rw_scalestep, worldhigh)
+        }
+        if worldlow > worldbottom {
+            pixlow = centeryfrac4 - fixed_mul(worldlow, rw_scale)
+            pixlowstep = 0 - fixed_mul(rw_scalestep, worldlow)
+        }
     }
 
     // ---------------------------------------------------------------
-    // Per-column rendering loop
+    // R_RenderSegLoop: per-column rendering
     // ---------------------------------------------------------------
-    let x = x1
-    while x <= x2 {
-        // Skip fully occluded columns
-        if r_occlusion[x] != 0 { x = x + 1; continue }
+    let rw_x = x1
+    const rw_stopx = x2 + 1
+    while rw_x < rw_stopx {
+        // --- mark floor / ceiling areas ---
+        let yl = (topfrac + HEIGHTUNIT - 1) >> HEIGHTBITS
+        if yl < r_ceilingclip[rw_x] + 1 { yl = r_ceilingclip[rw_x] + 1 }
 
-        // ---------------------------------------------------------
-        // Compute perspective distance for this column
-        // R_ScaleFromGlobalAngle equivalent
-        // ---------------------------------------------------------
-        const view_angle_delta = r_xtoviewangle[x]
-        const rw_angle = r_viewangle + view_angle_delta
-
-        // Distance to this column = rw_dist / cos(rw_angle - r_viewangle)
-        const cos_delta = fine_cosine((view_angle_delta) & (ANG360 - 1))
-        let col_dist = 0
-        if cos_delta != 0 {
-            col_dist = fixed_div(rw_dist, cos_delta)
-        } else {
-            col_dist = rw_dist
-        }
-        if col_dist <= 0 { x = x + 1; continue }
-
-        // ---------------------------------------------------------
-        // Scale factor: projection / distance
-        // This converts world units to screen pixels at this depth
-        // ---------------------------------------------------------
-        let scale = fixed_div(r_projection, col_dist >> 8)
-        if scale <= 0 { scale = 64 }
-        if scale > 256 * FRACUNIT { scale = 256 * FRACUNIT }
-
-        // Cache the scale for sprite clipping
-        r_wallscale[x] = scale
-
-        // ---------------------------------------------------------
-        // Compute colormap for diminished lighting
-        // ---------------------------------------------------------
-        const cmap_idx = r_calc_lightmap(light, col_dist)
-        const cmap = get_colormap(cmap_idx)
-
-        // ---------------------------------------------------------
-        // Project front sector ceiling and floor to screen rows
-        // top_y = screen row of ceiling
-        // bot_y = screen row of floor
-        // ---------------------------------------------------------
-        const top_y = r_centery - fixed_to_int(fixed_mul(worldfront_ceiling, scale))
-        const bot_y = r_centery - fixed_to_int(fixed_mul(worldfront_floor, scale))
-
-        // Current clip bounds for this column
-        const ceil_clip = r_ceilingclip[x] + 1
-        const floor_clip = r_floorclip[x] - 1
-
-        // ---------------------------------------------------------
-        // ONE-SIDED WALL: solid wall with middle texture
-        // ---------------------------------------------------------
-        if !has_back {
-            // Clamp wall drawing range to open clip region
-            const wall_top = if top_y < ceil_clip { ceil_clip } else { top_y }
-            const wall_bot = if bot_y > floor_clip { floor_clip } else { bot_y }
-
-            // Draw middle texture (or solid color fallback)
-            if midtex >= 0 && wall_top <= wall_bot {
-                const tex_col = r_calc_texcol(seg, rw_angle, col_dist)
-                const tex = tex_textures[midtex]
-                const tex_h = tex[2]
-
-                // Texture Y offset: unpegged = from ceiling, pegged = from floor
-                let tex_y_top = worldfront_ceiling + side_rowoffset
-                if dontpegbottom {
-                    tex_y_top = worldfront_floor + (tex_h << FRACBITS) + side_rowoffset
-                }
-
-                r_draw_wall_column(x, wall_top, wall_bot, midtex, tex_col, scale,
-                                   tex_y_top, tex_h, cmap, flags)
-            } else if wall_top <= wall_bot {
-                r_draw_color_column(x, wall_top, wall_bot, 96, cmap)
-            }
-
-            // Draw ceiling above the wall
-            r_draw_ceiling_plane(x, ceil_clip, top_y - 1, frontsector, col_dist, cmap_idx, front_ceiling_sky)
-
-            // Draw floor below the wall
-            r_draw_floor_plane(x, bot_y + 1, floor_clip, frontsector, col_dist, cmap_idx)
-
-            // Solid wall: fully occlude this column
-            r_ceilingclip[x] = VIEWHEIGHT
-            r_floorclip[x] = -1
-
-        // ---------------------------------------------------------
-        // TWO-SIDED WALL: upper texture, lower texture, optional mid
-        // ---------------------------------------------------------
-        } else {
-            // Project back sector ceiling and floor
-            let back_top_y = r_centery - fixed_to_int(fixed_mul(worldback_ceiling, scale))
-            let back_bot_y = r_centery - fixed_to_int(fixed_mul(worldback_floor, scale))
-
-            // =====================================================
-            // UPPER WALL: front ceiling higher than back ceiling
-            // =====================================================
-            if worldback_ceiling < worldfront_ceiling {
-                const wall_top = if top_y < ceil_clip { ceil_clip } else { top_y }
-                let wall_bot = if back_top_y - 1 > floor_clip { floor_clip } else { back_top_y - 1 }
-
-                if wall_top <= wall_bot {
-                    if toptex >= 0 {
-                        const tex_col = r_calc_texcol(seg, rw_angle, col_dist)
-                        const tex = tex_textures[toptex]
-                        const tex_h = tex[2]
-
-                        // Upper unpegged: draw from top of front ceiling
-                        // Upper pegged: draw from bottom of upper texture
-                        let tex_y_top = worldfront_ceiling + side_rowoffset
-                        if !dontpegtop {
-                            tex_y_top = worldback_ceiling + (tex_h << FRACBITS) + side_rowoffset
-                        }
-
-                        r_draw_wall_column(x, wall_top, wall_bot, toptex, tex_col, scale,
-                                           tex_y_top, tex_h, cmap, flags)
-                    } else if !(front_ceiling_sky && back_ceiling_sky) {
-                        // No texture but height difference: draw solid color
-                        r_draw_color_column(x, wall_top, wall_bot, 96, cmap)
-                    }
-                }
-
-                // Update ceiling clip: back ceiling becomes the new ceiling
-                if back_top_y > r_ceilingclip[x] + 1 {
-                    r_ceilingclip[x] = back_top_y - 1
-                }
-            }
-
-            // =====================================================
-            // LOWER WALL: front floor lower than back floor
-            // =====================================================
-            if worldback_floor > worldfront_floor {
-                let wall_top = if back_bot_y + 1 < ceil_clip { ceil_clip } else { back_bot_y + 1 }
-                const wall_bot = if bot_y > floor_clip { floor_clip } else { bot_y }
-
-                if wall_top <= wall_bot {
-                    if bottex >= 0 {
-                        const tex_col = r_calc_texcol(seg, rw_angle, col_dist)
-                        const tex = tex_textures[bottex]
-                        const tex_h = tex[2]
-
-                        // Lower unpegged: draw from top of front ceiling
-                        // Lower pegged: draw from back floor
-                        let tex_y_top = worldback_floor + side_rowoffset
-                        if dontpegbottom {
-                            tex_y_top = worldfront_ceiling + side_rowoffset
-                        }
-
-                        r_draw_wall_column(x, wall_top, wall_bot, bottex, tex_col, scale,
-                                           tex_y_top, tex_h, cmap, flags)
-                    } else {
-                        r_draw_color_column(x, wall_top, wall_bot, 96, cmap)
-                    }
-                }
-
-                // Update floor clip: back floor becomes the new floor
-                if back_bot_y < r_floorclip[x] - 1 {
-                    r_floorclip[x] = back_bot_y + 1
-                }
-            }
-
-            // =====================================================
-            // MIDDLE TEXTURE (two-sided): translucent/masked wall
-            // =====================================================
-            if midtex >= 0 {
-                const tex = tex_textures[midtex]
-                const tex_h = tex[2]
-
-                // Middle texture on two-sided line: clipped to opening
-                let mid_ceil = if worldback_ceiling < worldfront_ceiling {
-                    worldback_ceiling
-                } else {
-                    worldfront_ceiling
-                }
-                let mid_floor = if worldback_floor > worldfront_floor {
-                    worldback_floor
-                } else {
-                    worldfront_floor
-                }
-
-                let mid_top = r_centery - fixed_to_int(fixed_mul(mid_ceil, scale))
-                let mid_bot = r_centery - fixed_to_int(fixed_mul(mid_floor, scale))
-
-                mid_top = if mid_top < ceil_clip { ceil_clip } else { mid_top }
-                mid_bot = if mid_bot > floor_clip { floor_clip } else { mid_bot }
-
-                if mid_top <= mid_bot {
-                    const tex_col = r_calc_texcol(seg, rw_angle, col_dist)
-
-                    // Middle texture pegging: unpegged from ceiling, pegged from floor
-                    let tex_y_top = mid_ceil + side_rowoffset
-                    if dontpegbottom {
-                        tex_y_top = mid_floor + (tex_h << FRACBITS) + side_rowoffset
-                    }
-
-                    r_draw_masked_column(x, mid_top, mid_bot, midtex, tex_col, scale,
-                                         tex_y_top, tex_h, cmap)
-                }
-            }
-
-            // =====================================================
-            // Draw ceiling and floor spans for the open parts
-            // =====================================================
-
-            // Ceiling: from top clip to front ceiling
-            r_draw_ceiling_plane(x, ceil_clip, top_y - 1, frontsector, col_dist, cmap_idx, front_ceiling_sky)
-
-            // Floor: from front floor to bottom clip
-            r_draw_floor_plane(x, bot_y + 1, floor_clip, frontsector, col_dist, cmap_idx)
-
-            // If the opening is zero-height, mark as occluded
-            if worldback_ceiling <= worldfront_floor || worldback_floor >= worldfront_ceiling {
-                r_ceilingclip[x] = VIEWHEIGHT
-                r_floorclip[x] = -1
+        if markceiling {
+            let top = r_ceilingclip[rw_x] + 1
+            let bottom = yl - 1
+            if bottom >= r_floorclip[rw_x] { bottom = r_floorclip[rw_x] - 1 }
+            if top <= bottom {
+                r_draw_ceiling_plane(rw_x, top, bottom, frontsector,
+                    if rw_scale > 0 { fixed_div(r_projection, rw_scale) } else { rw_distance },
+                    r_calc_lightmap(light, if rw_scale > 0 { fixed_div(r_projection, rw_scale) } else { rw_distance }),
+                    front_ceiling_sky)
             }
         }
 
-        x = x + 1
+        let yh = bottomfrac >> HEIGHTBITS
+        if yh >= r_floorclip[rw_x] { yh = r_floorclip[rw_x] - 1 }
+
+        if markfloor {
+            let top = yh + 1
+            let bottom = r_floorclip[rw_x] - 1
+            if top <= r_ceilingclip[rw_x] { top = r_ceilingclip[rw_x] + 1 }
+            if top <= bottom {
+                r_draw_floor_plane(rw_x, top, bottom, frontsector,
+                    if rw_scale > 0 { fixed_div(r_projection, rw_scale) } else { rw_distance },
+                    r_calc_lightmap(light, if rw_scale > 0 { fixed_div(r_projection, rw_scale) } else { rw_distance }))
+            }
+        }
+
+        // --- texture column and lighting (independent of wall tiers) ---
+        let texturecolumn = 0
+        let cmap = null
+        let dc_iscale = 0
+        if segtextured {
+            const angle = (rw_centerangle + r_xtoviewangle[rw_x]) >> ANGLETOFINESHIFT
+            texturecolumn = fixed_to_int(rw_offset - fixed_mul(finetangent[angle & (FINEANGLES - 1)], rw_distance))
+
+            // lighting from wall scale
+            const cmap_idx = r_wall_light(light, rw_scale)
+            cmap = get_colormap(cmap_idx)
+
+            // dc_iscale = 0xFFFFFFFF / rw_scale
+            let clamped_scale = rw_scale
+            if clamped_scale <= 0 { clamped_scale = 256 }
+            dc_iscale = fixed_div(FRACUNIT, clamped_scale)
+        }
+
+        // Cache wall scale for sprite clipping
+        r_wallscale[rw_x] = rw_scale
+
+        // --- draw the wall tiers ---
+        if midtexture != 0 {
+            // Single sided line: draw middle texture
+            const mid_idx = midtexture - 1
+            if yl <= yh && mid_idx >= 0 && mid_idx < len(tex_textures) {
+                const tex = tex_textures[mid_idx]
+                if tex != null {
+                    r_draw_wall_column(rw_x, yl, yh, mid_idx, texturecolumn, rw_scale,
+                                       rw_midtexturemid, tex[2], cmap, flags)
+                } else {
+                    r_draw_color_column(rw_x, yl, yh, 96, cmap)
+                }
+            }
+            r_ceilingclip[rw_x] = VIEWHEIGHT
+            r_floorclip[rw_x] = -1
+        } else {
+            // Two sided line
+            if toptexture != 0 {
+                // Top wall
+                let mid = pixhigh >> HEIGHTBITS
+                pixhigh = pixhigh + pixhighstep
+
+                if mid >= r_floorclip[rw_x] { mid = r_floorclip[rw_x] - 1 }
+
+                if mid >= yl {
+                    const top_idx = toptexture - 1
+                    if top_idx >= 0 && top_idx < len(tex_textures) {
+                        const tex = tex_textures[top_idx]
+                        if tex != null {
+                            r_draw_wall_column(rw_x, yl, mid, top_idx, texturecolumn, rw_scale,
+                                               rw_toptexturemid, tex[2], cmap, flags)
+                        }
+                    }
+                    r_ceilingclip[rw_x] = mid
+                } else {
+                    r_ceilingclip[rw_x] = yl - 1
+                }
+            } else {
+                // No top wall
+                if markceiling {
+                    r_ceilingclip[rw_x] = yl - 1
+                }
+            }
+
+            if bottomtexture != 0 {
+                // Bottom wall
+                let mid = (pixlow + HEIGHTUNIT - 1) >> HEIGHTBITS
+                pixlow = pixlow + pixlowstep
+
+                if mid <= r_ceilingclip[rw_x] { mid = r_ceilingclip[rw_x] + 1 }
+
+                if mid <= yh {
+                    const bot_idx = bottomtexture - 1
+                    if bot_idx >= 0 && bot_idx < len(tex_textures) {
+                        const tex = tex_textures[bot_idx]
+                        if tex != null {
+                            r_draw_wall_column(rw_x, mid, yh, bot_idx, texturecolumn, rw_scale,
+                                               rw_bottomtexturemid, tex[2], cmap, flags)
+                        }
+                    }
+                    r_floorclip[rw_x] = mid
+                } else {
+                    r_floorclip[rw_x] = yh + 1
+                }
+            } else {
+                // No bottom wall
+                if markfloor {
+                    r_floorclip[rw_x] = yh + 1
+                }
+            }
+
+            // Masked mid texture on two-sided line
+            if maskedtexture {
+                const masked_idx = if sidedef != null { texture_find_index(sidedef["midtexture"]) } else { -1 }
+                if masked_idx >= 0 && masked_idx < len(tex_textures) {
+                    const tex = tex_textures[masked_idx]
+                    if tex != null {
+                        const tex_h = tex[2]
+                        let mid_ceil = if backsector["ceilingheight"] < frontsector["ceilingheight"] {
+                            backsector["ceilingheight"]
+                        } else {
+                            frontsector["ceilingheight"]
+                        }
+                        let mid_floor = if backsector["floorheight"] > frontsector["floorheight"] {
+                            backsector["floorheight"]
+                        } else {
+                            frontsector["floorheight"]
+                        }
+                        mid_ceil = mid_ceil - r_viewz
+                        mid_floor = mid_floor - r_viewz
+
+                        let dc_texturemid = mid_ceil + side_rowoffset
+                        if (flags & ML_DONTPEGBOTTOM) != 0 {
+                            dc_texturemid = mid_floor + (tex_h << FRACBITS) + side_rowoffset
+                        }
+
+                        let mtop = r_centery - fixed_to_int(fixed_mul(mid_ceil, rw_scale))
+                        let mbot = r_centery - fixed_to_int(fixed_mul(mid_floor, rw_scale))
+                        if mtop < r_ceilingclip[rw_x] + 1 { mtop = r_ceilingclip[rw_x] + 1 }
+                        if mbot > r_floorclip[rw_x] - 1 { mbot = r_floorclip[rw_x] - 1 }
+
+                        if mtop <= mbot {
+                            r_draw_masked_column(rw_x, mtop, mbot, masked_idx, texturecolumn, rw_scale,
+                                                 dc_texturemid, tex_h, cmap)
+                        }
+                    }
+                }
+            }
+        }
+
+        rw_scale = rw_scale + rw_scalestep
+        topfrac = topfrac + topstep
+        bottomfrac = bottomfrac + bottomstep
+        rw_x = rw_x + 1
     }
 }
+
+// =========================================================================
+// R_SEGS: R_ScaleFromGlobalAngle — compute wall scale at a given column angle
+//
+// scale = (projection * sin(angleb)) / (rw_distance * sin(anglea))
+// where anglea = ANG90 + (visangle - viewangle)      [view-relative]
+//       angleb = ANG90 + (visangle - rw_normalangle)  [wall-relative]
+// =========================================================================
+
+// r_scale_from_global_angle defined later in the file (single definition)
 
 // =========================================================================
 // R_SEGS: Calculate texture column for a wall seg
@@ -815,55 +1056,36 @@ func r_calc_texcol(seg, rw_angle, dist) {
 // =========================================================================
 
 func r_draw_wall_column(x, y1, y2, texnum, texcol, scale, world_top, tex_h, cmap, flags) {
+    // Matching original DOOM r_draw.c R_DrawColumn exactly
     if y1 > y2 || x < 0 || x >= VIEWWIDTH { return }
-    if tex_h <= 0 { return }
+    if tex_h <= 0 || scale <= 0 { return }
 
-    // Fetch the column pixel data from the texture cache
     const column = texture_get_column(texnum, texcol)
     if column == null { return }
-
     const col_h = len(column)
     if col_h == 0 { return }
 
-    // ---------------------------------------------------------------
-    // Compute texture-space Y mapping
-    //
-    // The reference screen row for the top of the texture is:
-    //   ref_y = centery - (world_top * scale) / FRACUNIT
-    //
-    // For each screen row y, the texture row is:
-    //   tex_y = (y - ref_y) * tex_h / wall_screen_height
-    //
-    // We use a fractional step for accurate sub-pixel mapping.
-    // ---------------------------------------------------------------
-    const ref_y = r_centery - fixed_to_int(fixed_mul(world_top, scale))
+    // dc_iscale = FRACUNIT * FRACUNIT / scale (inverse scale, matching 0xFFFFFFFF/scale)
+    const dc_iscale = fixed_div(FRACUNIT, scale)
 
-    // Inverse scale: how many texture pixels per screen pixel
-    let texstep = 0
-    if scale != 0 {
-        texstep = fixed_div(tex_h << FRACBITS, scale)
-    }
-    if texstep <= 0 { texstep = FRACUNIT }
-
-    // Starting texture coordinate
-    let texfrac = (y1 - ref_y) * texstep
+    // dc_texturemid = world_top (texture origin in world coords relative to viewz)
+    // frac = dc_texturemid + (yl - centery) * dc_iscale
+    let frac = world_top + (y1 - r_centery) * dc_iscale
 
     let y = y1
     while y <= y2 {
         if y >= 0 && y < VIEWHEIGHT {
-            // Convert fixed-point texture fraction to integer row
-            let ty = fixed_to_int(texfrac)
+            // (frac >> FRACBITS) & 127 — matching DOOM's column mask
+            let ty = (frac >> FRACBITS) & 127
+            if ty < 0 { ty = ty + 128 }
+            if ty >= col_h { ty = ((ty % col_h) + col_h) % col_h }
 
-            // Tile the texture vertically
-            ty = ((ty % col_h) + col_h) % col_h
-
-            // Fetch texel and apply colormap
             let px = column[ty]
             if cmap != null && px >= 0 && px < 256 { px = cmap[px] }
 
             r_framebuffer[y * SCREENWIDTH + x] = px
         }
-        texfrac = texfrac + texstep
+        frac = frac + dc_iscale
         y = y + 1
     }
 }
@@ -906,7 +1128,8 @@ func r_draw_masked_column(x, y1, y2, texnum, texcol, scale, world_top, tex_h, cm
             // Skip transparent pixels (index 0 for masked textures)
             if px != 0 {
                 if cmap != null && px >= 0 && px < 256 { px = cmap[px] }
-                r_framebuffer[y * SCREENWIDTH + x] = px
+                const fb_idx = y * SCREENWIDTH + x
+            if fb_idx >= 0 && fb_idx < len(r_framebuffer) { r_framebuffer[fb_idx] = px }
             }
         }
         texfrac = texfrac + texstep
@@ -928,7 +1151,8 @@ func r_draw_color_column(x, y1, y2, color, cmap) {
     let y = y1
     while y <= y2 {
         if y >= 0 && y < VIEWHEIGHT && x >= 0 && x < SCREENWIDTH {
-            r_framebuffer[y * SCREENWIDTH + x] = px
+            const fb_idx = y * SCREENWIDTH + x
+            if fb_idx >= 0 && fb_idx < len(r_framebuffer) { r_framebuffer[fb_idx] = px }
         }
         y = y + 1
     }
@@ -957,6 +1181,8 @@ func r_draw_ceiling_plane(x, y1, y2, sector, col_dist, cmap_idx, is_sky) {
         const flat = texture_get_flat(sector["ceilingpic"])
         if flat != null {
             r_draw_flat_column(x, cy1, cy2, flat, sector["ceilingheight"], cmap_idx, true)
+        } else {
+            r_draw_color_column(x, cy1, cy2, 40, get_colormap(cmap_idx))
         }
     }
 }
@@ -979,6 +1205,8 @@ func r_draw_floor_plane(x, y1, y2, sector, col_dist, cmap_idx) {
     const flat = texture_get_flat(sector["floorpic"])
     if flat != null {
         r_draw_flat_column(x, fy1, fy2, flat, sector["floorheight"], cmap_idx, false)
+    } else {
+        r_draw_color_column(x, fy1, fy2, 120, get_colormap(cmap_idx))
     }
 }
 
@@ -1027,53 +1255,12 @@ func r_draw_flat_column(x, y1, y2, flat, plane_height, base_cmap_idx, is_ceiling
     if y1 > y2 { return }
     if flat == null { return }
     if len(flat) < 4096 { return }
-
-    let y = y1
-    while y <= y2 {
-        if y >= 0 && y < VIEWHEIGHT {
-            // Distance from the eye to this row of the flat
-            const dy = abs(y - r_centery)
-            if dy == 0 { y = y + 1; continue }
-
-            const plane_z = abs(plane_height - r_viewz)
-            if plane_z == 0 { y = y + 1; continue }
-
-            // R_PlaneDistance: distance = plane_height * projection / (y - centery)
-            // This gives the world-space distance to this horizontal line
-            const dist = fixed_div(fixed_mul(plane_z, r_projection >> 6), dy << (FRACBITS - 6))
-            if dist <= 0 { y = y + 1; continue }
-
-            // Diminished lighting: further floors/ceilings are darker
-            let flat_cmap_idx = base_cmap_idx + (fixed_to_int(dist) >> 6)
-            if flat_cmap_idx < 0 { flat_cmap_idx = 0 }
-            if flat_cmap_idx >= NUMCOLORMAPS { flat_cmap_idx = NUMCOLORMAPS - 1 }
-            const cmap = get_colormap(flat_cmap_idx)
-
-            // World-space coordinates of this pixel on the flat
-            // ds_xfrac = viewx + cos(viewangle) * distance
-            // ds_yfrac = viewy - sin(viewangle) * distance
-            const view_angle_delta = r_xtoviewangle[x]
-            const col_angle = r_viewangle + view_angle_delta
-
-            const map_x = r_viewx + fixed_mul(dist, fine_cosine(col_angle & (ANG360 - 1)))
-            const map_y = r_viewy - fixed_mul(dist, fine_sine(col_angle & (ANG360 - 1)))
-
-            // Map to 64x64 flat texture coordinates (flats always tile)
-            const tx = (((map_x >> FRACBITS) & 63) + 64) % 64
-            const ty = (((map_y >> FRACBITS) & 63) + 64) % 64
-
-            // Fetch texel and apply colormap
-            const flat_idx = ty * 64 + tx
-            let px = 0
-            if flat_idx >= 0 && flat_idx < 4096 {
-                px = flat[flat_idx]
-            }
-            if cmap != null && px >= 0 && px < 256 { px = cmap[px] }
-
-            r_framebuffer[y * SCREENWIDTH + x] = px
-        }
-        y = y + 1
-    }
+    let cmap_idx = base_cmap_idx
+    if cmap_idx < 0 { cmap_idx = 0 }
+    if cmap_idx >= NUMCOLORMAPS { cmap_idx = NUMCOLORMAPS - 1 }
+    const cmap = get_colormap(cmap_idx)
+    const va = r_xtoviewangle[x]
+    __render_flat_col(r_framebuffer, flat, x, y1, y2, r_viewx, r_viewy, r_viewz, r_viewangle, plane_height, r_projection, r_centery, cmap, va, finesine, finecosine_offset)
 }
 
 // =========================================================================
@@ -1121,7 +1308,10 @@ func r_draw_sky_column(x, y1, y2) {
         const clamped_ty = ((ty % col_h) + col_h) % col_h
 
         // Sky is drawn at full brightness (no colormap)
-        r_framebuffer[y * SCREENWIDTH + x] = column[clamped_ty]
+        const sky_fb_idx = y * SCREENWIDTH + x
+        if sky_fb_idx >= 0 && sky_fb_idx < len(r_framebuffer) && clamped_ty >= 0 && clamped_ty < len(column) {
+            r_framebuffer[sky_fb_idx] = column[clamped_ty]
+        }
         y = y + 1
     }
 }
@@ -1245,21 +1435,26 @@ func r_draw_single_visplane(vp) {
 // =========================================================================
 
 func r_calc_lightmap(lightlevel, dist) {
-    // Base light level mapped to colormap range [0..31]
-    let level = lightlevel >> 4
+    // Matching original DOOM r_main.c R_InitLightTables (zlight table)
+    // lightindex = lightlevel >> LIGHTSEGSHIFT (>>4)
+    // startmap = ((LIGHTLEVELS-1-lightindex)*2)*NUMCOLORMAPS/LIGHTLEVELS
+    // z_index = dist >> LIGHTZSHIFT (>>20), clamped to 0..MAXLIGHTZ-1
+    // scale = FixedDiv(SCREENWIDTH/2*FRACUNIT, (z_index+1)<<LIGHTZSHIFT) >> LIGHTSCALESHIFT
+    // level = startmap - scale/DISTMAP
+    let lightindex = lightlevel >> 4
+    if lightindex < 0 { lightindex = 0 }
+    if lightindex >= 16 { lightindex = 15 }
+    const startmap = ((15 - lightindex) * 2) * NUMCOLORMAPS / 16
+
+    // Distance-based diminishing
+    let z_index = (dist >> 20)
+    if z_index < 0 { z_index = 0 }
+    if z_index >= 128 { z_index = 127 }
+    const scale = fixed_div(160 * FRACUNIT, (z_index + 1) << 20) >> 12
+    let level = startmap - scale / 2
     if level < 0 { level = 0 }
     if level >= NUMCOLORMAPS { level = NUMCOLORMAPS - 1 }
-
-    // Distance diminishing: further away = darker
-    // The shift factor controls how aggressively light falls off
-    const diminish = fixed_to_int(dist) >> 4
-
-    // Compute final colormap index: brighter sector = lower index
-    let idx = (NUMCOLORMAPS - 1) - level + diminish
-    if idx < 0 { idx = 0 }
-    if idx >= NUMCOLORMAPS { idx = NUMCOLORMAPS - 1 }
-
-    idx
+    level
 }
 
 // =========================================================================
@@ -1317,7 +1512,10 @@ func r_draw_vissprites() {
     r_sortedsprites = r_sort_vissprites()
 
     // Draw each sprite
-    for vs in r_sortedsprites {
+    let _dsi = 0
+    while _dsi < len(r_sortedsprites) {
+        const vs = r_sortedsprites[_dsi]
+        _dsi = _dsi + 1
         r_draw_sprite(vs)
     }
 }
@@ -1329,7 +1527,10 @@ func r_draw_vissprites() {
 func r_sort_vissprites() {
     // Copy to sortable array
     let sorted = []
-    for vs in r_vissprites {
+    let _svi = 0
+    while _svi < len(r_vissprites) {
+        const vs = r_vissprites[_svi]
+        _svi = _svi + 1
         sorted.push(vs)
     }
 
@@ -1586,7 +1787,7 @@ func r_sprite_rotation(thing) {
     // Map to rotation index (1-8)
     // Each rotation covers 45 degrees (ANG45)
     // Add half a rotation (ANG45/2) for rounding
-    let rot = ((rot_angle + ANG45 / 2) * 9 / ANG360) & 7
+    let rot = ((rot_angle + 0x20000000 / 2) * 9 / 0x100000000) & 7
     if rot < 0 { rot = rot + 8 }
 
     // Doom rotation indices: 1-8 (1 = facing viewer)
@@ -1601,18 +1802,7 @@ func r_sprite_rotation(thing) {
 // =========================================================================
 
 func render_blit(window) {
-    let y = 0
-    while y < SCREENHEIGHT {
-        let x = 0
-        while x < SCREENWIDTH {
-            const px = r_framebuffer[y * SCREENWIDTH + x]
-            const rgb = palette_rgb(px)
-            sdl_set_color(window, rgb[0], rgb[1], rgb[2])
-            sdl_fill_rect(window, x * SCREENSCALE, y * SCREENSCALE, SCREENSCALE, SCREENSCALE)
-            x = x + 1
-        }
-        y = y + 1
-    }
+    sdl_blit_fb(window, r_framebuffer, SCREENWIDTH, SCREENHEIGHT, tex_palette)
 }
 
 // =========================================================================
@@ -1641,7 +1831,8 @@ func r_draw_span(y, x1, x2, flat, ds_xfrac, ds_yfrac, ds_xstep, ds_ystep, cmap) 
             let px = flat[ty * 64 + tx]
             if cmap != null && px >= 0 && px < 256 { px = cmap[px] }
 
-            r_framebuffer[y * SCREENWIDTH + x] = px
+            const fb_idx = y * SCREENWIDTH + x
+            if fb_idx >= 0 && fb_idx < len(r_framebuffer) { r_framebuffer[fb_idx] = px }
         }
 
         xfrac = xfrac + ds_xstep
@@ -1707,24 +1898,25 @@ func r_draw_fuzz_column(x, y1, y2) {
 
 // R_ScaleFromGlobalAngle: compute wall scale from angle and distance
 func r_scale_from_global_angle(visangle, rw_dist, rw_normalangle) {
-    const anglea = ANG90 + visangle - rw_normalangle
-    const angleb = ANG90 + visangle - r_viewangle
+    // Matching original DOOM r_main.c R_ScaleFromGlobalAngle exactly
+    const anglea = (0x40000000 + visangle - r_viewangle) % 0x100000000
+    const angleb = (0x40000000 + visangle - rw_normalangle) % 0x100000000
 
-    const sinea = fine_sine(anglea >> ANGLETOFINESHIFT << ANGLETOFINESHIFT)
-    const sineb = fine_sine(angleb >> ANGLETOFINESHIFT << ANGLETOFINESHIFT)
+    const sinea = fine_sine(anglea)
+    const sineb = fine_sine(angleb)
 
-    if sineb == 0 { return FRACUNIT }
+    let num = fixed_mul(r_projection, sineb)
+    let den = fixed_mul(rw_dist, sinea)
 
-    let num = fixed_mul(r_projection, sinea)
-    let den = fixed_mul(rw_dist, sineb)
+    if den == 0 { return 64 * FRACUNIT }
 
-    if den <= 0 { return 256 * FRACUNIT }
-
-    let scale = fixed_div(num, den >> 8)
-    if scale > 256 * FRACUNIT { scale = 256 * FRACUNIT }
-    if scale < 256 { scale = 256 }
-
-    scale
+    if den > (num >> 16) {
+        let scale = fixed_div(num, den)
+        if scale > 64 * FRACUNIT { scale = 64 * FRACUNIT }
+        if scale < 256 { scale = 256 }
+        return scale
+    }
+    return 64 * FRACUNIT
 }
 
 // Compute the perpendicular distance from the viewpoint to a seg
@@ -1751,21 +1943,23 @@ func r_seg_distance(seg) {
 // =========================================================================
 
 func r_wall_light(base_light, scale) {
-    // Scale-based light index: larger scale = closer = brighter
-    let light_idx = (scale >> (FRACBITS + LIGHTSEGSHIFT))
-    if light_idx < 0 { light_idx = 0 }
-    if light_idx >= MAXLIGHTSCALE { light_idx = MAXLIGHTSCALE - 1 }
+    // Matching original DOOM r_main.c R_ExecuteSetViewSize scalelight table
+    // lightnum = lightlevel >> LIGHTSEGSHIFT (>>4)
+    // startmap = ((LIGHTLEVELS-1-lightnum)*2)*NUMCOLORMAPS/LIGHTLEVELS
+    // j = scale >> LIGHTSCALESHIFT (>>12), clamped to 0..MAXLIGHTSCALE-1
+    // level = startmap - j*320/(320)/DISTMAP = startmap - j/DISTMAP
+    let lightnum = base_light >> 4
+    if lightnum < 0 { lightnum = 0 }
+    if lightnum >= 16 { lightnum = 15 }
+    const startmap = ((15 - lightnum) * 2) * NUMCOLORMAPS / 16
 
-    // Map to colormap range
-    let level = base_light >> 4
+    let j = scale >> 12
+    if j < 0 { j = 0 }
+    if j >= 48 { j = 47 }
+    let level = startmap - j / 2
     if level < 0 { level = 0 }
-    if level >= LIGHTLEVELS { level = LIGHTLEVELS - 1 }
-
-    let idx = (NUMCOLORMAPS - 1) - level + (MAXLIGHTSCALE - 1 - light_idx) / 2
-    if idx < 0 { idx = 0 }
-    if idx >= NUMCOLORMAPS { idx = NUMCOLORMAPS - 1 }
-
-    idx
+    if level >= NUMCOLORMAPS { level = NUMCOLORMAPS - 1 }
+    level
 }
 
 // =========================================================================

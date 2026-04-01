@@ -43,7 +43,10 @@ func doors_init() {
 // ---------------------------------------------------------------------------
 func find_tagged_sector(tag) {
     if tag == 0 { return null }
-    for sector in map_sectors {
+    let _fti = 0
+    while _fti < len(map_sectors) {
+        const sector = map_sectors[_fti]
+        _fti = _fti + 1
         if sector["tag"] == tag { return sector }
     }
     null
@@ -52,7 +55,10 @@ func find_tagged_sector(tag) {
 func find_all_tagged_sectors(tag) {
     let result = []
     if tag == 0 { return result }
-    for sector in map_sectors {
+    let _fai = 0
+    while _fai < len(map_sectors) {
+        const sector = map_sectors[_fai]
+        _fai = _fai + 1
         if sector["tag"] == tag { result.push(sector) }
     }
     result
@@ -60,7 +66,10 @@ func find_all_tagged_sectors(tag) {
 
 func find_lowest_ceiling_around(sector) {
     let lowest = 32767 << FRACBITS
-    for line in map_linedefs {
+    let _lci = 0
+    while _lci < len(map_linedefs) {
+        const line = map_linedefs[_lci]
+        _lci = _lci + 1
         if line["frontsector"] == sector && line["backsector"] != null {
             if line["backsector"]["ceilingheight"] < lowest {
                 lowest = line["backsector"]["ceilingheight"]
@@ -77,7 +86,10 @@ func find_lowest_ceiling_around(sector) {
 
 func find_highest_ceiling_around(sector) {
     let highest = -32767 << FRACBITS
-    for line in map_linedefs {
+    let _hci = 0
+    while _hci < len(map_linedefs) {
+        const line = map_linedefs[_hci]
+        _hci = _hci + 1
         if line["frontsector"] == sector && line["backsector"] != null {
             if line["backsector"]["ceilingheight"] > highest {
                 highest = line["backsector"]["ceilingheight"]
@@ -94,7 +106,10 @@ func find_highest_ceiling_around(sector) {
 
 func find_lowest_floor_around(sector) {
     let lowest = sector["floorheight"]
-    for line in map_linedefs {
+    let _lfi = 0
+    while _lfi < len(map_linedefs) {
+        const line = map_linedefs[_lfi]
+        _lfi = _lfi + 1
         if line["frontsector"] == sector && line["backsector"] != null {
             if line["backsector"]["floorheight"] < lowest { lowest = line["backsector"]["floorheight"] }
         }
@@ -107,7 +122,10 @@ func find_lowest_floor_around(sector) {
 
 func find_highest_floor_around(sector) {
     let highest = -32767 << FRACBITS
-    for line in map_linedefs {
+    let _hfi = 0
+    while _hfi < len(map_linedefs) {
+        const line = map_linedefs[_hfi]
+        _hfi = _hfi + 1
         if line["frontsector"] == sector && line["backsector"] != null {
             if line["backsector"]["floorheight"] > highest { highest = line["backsector"]["floorheight"] }
         }
@@ -121,7 +139,10 @@ func find_highest_floor_around(sector) {
 func find_next_highest_floor(sector, current_height) {
     let best = 32767 << FRACBITS
     let found = false
-    for line in map_linedefs {
+    let _nhi = 0
+    while _nhi < len(map_linedefs) {
+        const line = map_linedefs[_nhi]
+        _nhi = _nhi + 1
         if line["frontsector"] == sector && line["backsector"] != null {
             const h = line["backsector"]["floorheight"]
             if h > current_height && h < best { best = h; found = true }
@@ -137,7 +158,10 @@ func find_next_highest_floor(sector, current_height) {
 func find_next_lowest_floor(sector, current_height) {
     let best = -32767 << FRACBITS
     let found = false
-    for line in map_linedefs {
+    let _nli = 0
+    while _nli < len(map_linedefs) {
+        const line = map_linedefs[_nli]
+        _nli = _nli + 1
         if line["frontsector"] == sector && line["backsector"] != null {
             const h = line["backsector"]["floorheight"]
             if h < current_height && h > best { best = h; found = true }
@@ -152,7 +176,10 @@ func find_next_lowest_floor(sector, current_height) {
 
 func find_shortest_texture_around(sector) {
     let min_tex = 32767 << FRACBITS
-    for line in map_linedefs {
+    let _sti = 0
+    while _sti < len(map_linedefs) {
+        const line = map_linedefs[_sti]
+        _sti = _sti + 1
         let is_adj = false
         if line["frontsector"] == sector { is_adj = true }
         if line["backsector"] == sector { is_adj = true }
@@ -182,7 +209,10 @@ func texture_height_for_name(name) {
 
 func find_min_surrounding_light(sector, min_val) {
     let result = min_val
-    for line in map_linedefs {
+    let _mli = 0
+    while _mli < len(map_linedefs) {
+        const line = map_linedefs[_mli]
+        _mli = _mli + 1
         if line["frontsector"] == sector && line["backsector"] != null {
             if line["backsector"]["lightlevel"] < result {
                 result = line["backsector"]["lightlevel"]
@@ -199,7 +229,10 @@ func find_min_surrounding_light(sector, min_val) {
 
 func find_max_surrounding_light(sector, max_val) {
     let result = max_val
-    for line in map_linedefs {
+    let _xli = 0
+    while _xli < len(map_linedefs) {
+        const line = map_linedefs[_xli]
+        _xli = _xli + 1
         if line["frontsector"] == sector && line["backsector"] != null {
             if line["backsector"]["lightlevel"] > result {
                 result = line["backsector"]["lightlevel"]
@@ -232,7 +265,10 @@ func get_sector_neighbor(sector, line) {
 }
 
 func sector_has_active_thinker(sector, thinker_type) {
-    for t in door_thinkers {
+    let _ati = 0
+    while _ati < len(door_thinkers) {
+        const t = door_thinkers[_ati]
+        _ati = _ati + 1
         if t["sector"] == sector && t["type"] == thinker_type { return true }
     }
     false
@@ -524,7 +560,10 @@ func ev_do_door_normal(line, use_tag) {
         do_door_for_sector(line["backsector"], VDOORSPEED, VDOORWAIT)
         return
     }
-    for sec in sectors {
+    let _dni = 0
+    while _dni < len(sectors) {
+        const sec = sectors[_dni]
+        _dni = _dni + 1
         if sector_has_active_thinker(sec, "door") { continue }
         do_door_for_sector(sec, VDOORSPEED, VDOORWAIT)
     }
@@ -537,7 +576,10 @@ func ev_do_door_open(line, use_tag) {
         do_door_for_sector(line["backsector"], VDOORSPEED, -1)
         return
     }
-    for sec in sectors {
+    let _doi = 0
+    while _doi < len(sectors) {
+        const sec = sectors[_doi]
+        _doi = _doi + 1
         if sector_has_active_thinker(sec, "door") { continue }
         do_door_for_sector(sec, VDOORSPEED, -1)
     }
@@ -550,7 +592,10 @@ func ev_do_door_open_grating(line) {
         do_door_for_sector(line["backsector"], VDOORSPEED, -1)
         return
     }
-    for sec in sectors {
+    let _dgi = 0
+    while _dgi < len(sectors) {
+        const sec = sectors[_dgi]
+        _dgi = _dgi + 1
         if sector_has_active_thinker(sec, "door") { continue }
         do_door_for_sector(sec, VDOORSPEED, -1)
     }
@@ -559,7 +604,10 @@ func ev_do_door_open_grating(line) {
 // Door closes
 func ev_do_door_close(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _dci = 0
+    while _dci < len(sectors) {
+        const sec = sectors[_dci]
+        _dci = _dci + 1
         if sector_has_active_thinker(sec, "door") { continue }
         const floor = sec["floorheight"]
         door_thinkers.push({
@@ -578,7 +626,10 @@ func ev_do_door_close(line) {
 // Door closes, waits 30 seconds, then opens
 func ev_do_door_close_30_open(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _dcoi = 0
+    while _dcoi < len(sectors) {
+        const sec = sectors[_dcoi]
+        _dcoi = _dcoi + 1
         if sector_has_active_thinker(sec, "door") { continue }
         const top = find_lowest_ceiling_around(sec) - 4 * FRACUNIT
         door_thinkers.push({
@@ -601,7 +652,10 @@ func ev_do_door_blaze_normal(line) {
         do_door_for_sector(line["backsector"], BLAZESPEED, BLAZEWAIT)
         return
     }
-    for sec in sectors {
+    let _bni = 0
+    while _bni < len(sectors) {
+        const sec = sectors[_bni]
+        _bni = _bni + 1
         if sector_has_active_thinker(sec, "door") { continue }
         do_door_for_sector(sec, BLAZESPEED, BLAZEWAIT)
     }
@@ -614,7 +668,10 @@ func ev_do_door_blaze_open(line) {
         do_door_for_sector(line["backsector"], BLAZESPEED, -1)
         return
     }
-    for sec in sectors {
+    let _boi = 0
+    while _boi < len(sectors) {
+        const sec = sectors[_boi]
+        _boi = _boi + 1
         if sector_has_active_thinker(sec, "door") { continue }
         do_door_for_sector(sec, BLAZESPEED, -1)
     }
@@ -623,7 +680,10 @@ func ev_do_door_blaze_open(line) {
 // Blazing door: closes fast
 func ev_do_door_blaze_close(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _bci = 0
+    while _bci < len(sectors) {
+        const sec = sectors[_bci]
+        _bci = _bci + 1
         if sector_has_active_thinker(sec, "door") { continue }
         const floor = sec["floorheight"]
         door_thinkers.push({
@@ -690,7 +750,10 @@ func hud_message_key(card) {
 // Core door creation for a sector
 func do_door_for_sector(sector, speed, wait_tics) {
     // If door already active, reverse closing doors
-    for t in door_thinkers {
+    let _dfi = 0
+    while _dfi < len(door_thinkers) {
+        const t = door_thinkers[_dfi]
+        _dfi = _dfi + 1
         if t["sector"] == sector && t["type"] == "door" {
             if t["direction"] == -1 {
                 t["direction"] = 1
@@ -719,7 +782,10 @@ func do_door_for_sector(sector, speed, wait_tics) {
 // Standard lift: floor lowers to lowest surrounding, waits, raises back
 func ev_do_plat_down_wait_up(line, wait) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _pwi = 0
+    while _pwi < len(sectors) {
+        const sec = sectors[_pwi]
+        _pwi = _pwi + 1
         if sector_has_active_thinker(sec, "plat") { continue }
         const low = find_lowest_floor_around(sec)
         door_thinkers.push({
@@ -741,7 +807,10 @@ func ev_do_plat_down_wait_up(line, wait) {
 // Blazing lift: same as above but faster
 func ev_do_plat_down_wait_up_blaze(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _pbi = 0
+    while _pbi < len(sectors) {
+        const sec = sectors[_pbi]
+        _pbi = _pbi + 1
         if sector_has_active_thinker(sec, "plat") { continue }
         const low = find_lowest_floor_around(sec)
         door_thinkers.push({
@@ -763,7 +832,10 @@ func ev_do_plat_down_wait_up_blaze(line) {
 // Perpetual platform: goes up and down forever
 func ev_do_plat_perpetual_raise(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _pri = 0
+    while _pri < len(sectors) {
+        const sec = sectors[_pri]
+        _pri = _pri + 1
         // Stop any existing perpetual plat first
         ev_stop_plat_for_sector(sec)
         const low = find_lowest_floor_around(sec)
@@ -812,7 +884,10 @@ func ev_stop_plat_for_sector(sector) {
 // Platform raise 24 units, change texture to surrounding
 func ev_do_plat_raise_24_change(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _p24i = 0
+    while _p24i < len(sectors) {
+        const sec = sectors[_p24i]
+        _p24i = _p24i + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = sec["floorheight"] + 24 * FRACUNIT
         const new_pic = get_floor_pic_from_line(line)
@@ -833,7 +908,10 @@ func ev_do_plat_raise_24_change(line) {
 // Platform raise 32 units, change texture to surrounding
 func ev_do_plat_raise_32_change(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _p32i = 0
+    while _p32i < len(sectors) {
+        const sec = sectors[_p32i]
+        _p32i = _p32i + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = sec["floorheight"] + 32 * FRACUNIT
         const new_pic = get_floor_pic_from_line(line)
@@ -854,7 +932,10 @@ func ev_do_plat_raise_32_change(line) {
 // Platform raise to next higher floor, change texture and type
 func ev_do_plat_raise_next_change(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _pnci = 0
+    while _pnci < len(sectors) {
+        const sec = sectors[_pnci]
+        _pnci = _pnci + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = find_next_highest_floor(sec, sec["floorheight"])
         const new_pic = get_floor_pic_from_line(line)
@@ -887,7 +968,10 @@ func get_floor_pic_from_line(line) {
 // Floor lower to lowest surrounding floor
 func ev_do_floor_lower_to_lowest(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _flli = 0
+    while _flli < len(sectors) {
+        const sec = sectors[_flli]
+        _flli = _flli + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = find_lowest_floor_around(sec)
         door_thinkers.push({
@@ -905,7 +989,10 @@ func ev_do_floor_lower_to_lowest(line) {
 // Floor lower to highest surrounding floor
 func ev_do_floor_lower_to_highest(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _flhi = 0
+    while _flhi < len(sectors) {
+        const sec = sectors[_flhi]
+        _flhi = _flhi + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = find_highest_floor_around(sec)
         door_thinkers.push({
@@ -923,13 +1010,19 @@ func ev_do_floor_lower_to_highest(line) {
 // Floor lower to lowest surrounding floor, change texture and type
 func ev_do_floor_lower_to_lowest_change(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _flci = 0
+    while _flci < len(sectors) {
+        const sec = sectors[_flci]
+        _flci = _flci + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = find_lowest_floor_around(sec)
         // Find the floor texture from the model sector (lowest floor neighbor)
         let model_pic = sec["floorpic"]
         let model_special = 0
-        for ld in map_linedefs {
+        let _flcj = 0
+        while _flcj < len(map_linedefs) {
+            const ld = map_linedefs[_flcj]
+            _flcj = _flcj + 1
             let other = null
             if ld["frontsector"] == sec && ld["backsector"] != null { other = ld["backsector"] }
             if ld["backsector"] == sec && ld["frontsector"] != null { other = ld["frontsector"] }
@@ -955,7 +1048,10 @@ func ev_do_floor_lower_to_lowest_change(line) {
 // Floor raise to lowest ceiling
 func ev_do_floor_raise_to_lowest_ceiling(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _frci = 0
+    while _frci < len(sectors) {
+        const sec = sectors[_frci]
+        _frci = _frci + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = find_lowest_ceiling_around(sec)
         door_thinkers.push({
@@ -973,7 +1069,10 @@ func ev_do_floor_raise_to_lowest_ceiling(line) {
 // Floor raise to lowest ceiling, with crush
 func ev_do_floor_raise_crush(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _fcri = 0
+    while _fcri < len(sectors) {
+        const sec = sectors[_fcri]
+        _fcri = _fcri + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = find_lowest_ceiling_around(sec) - 8 * FRACUNIT
         door_thinkers.push({
@@ -991,7 +1090,10 @@ func ev_do_floor_raise_crush(line) {
 // Floor raise to next higher floor
 func ev_do_floor_raise_to_next(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _frni = 0
+    while _frni < len(sectors) {
+        const sec = sectors[_frni]
+        _frni = _frni + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = find_next_highest_floor(sec, sec["floorheight"])
         door_thinkers.push({
@@ -1009,7 +1111,10 @@ func ev_do_floor_raise_to_next(line) {
 // Floor raise turbo (to next higher, fast)
 func ev_do_floor_raise_turbo(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _frti = 0
+    while _frti < len(sectors) {
+        const sec = sectors[_frti]
+        _frti = _frti + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = find_next_highest_floor(sec, sec["floorheight"])
         door_thinkers.push({
@@ -1027,7 +1132,10 @@ func ev_do_floor_raise_turbo(line) {
 // Floor turbo lower: lower to 8 above highest surrounding floor
 func ev_do_floor_turbo_lower(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _ftli = 0
+    while _ftli < len(sectors) {
+        const sec = sectors[_ftli]
+        _ftli = _ftli + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = find_highest_floor_around(sec) + 8 * FRACUNIT
         let actual_target = target
@@ -1047,7 +1155,10 @@ func ev_do_floor_turbo_lower(line) {
 // Floor raise 24 units
 func ev_do_floor_raise_24(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _fr24i = 0
+    while _fr24i < len(sectors) {
+        const sec = sectors[_fr24i]
+        _fr24i = _fr24i + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = sec["floorheight"] + 24 * FRACUNIT
         door_thinkers.push({
@@ -1065,7 +1176,10 @@ func ev_do_floor_raise_24(line) {
 // Floor raise 24 units and change texture
 func ev_do_floor_raise_24_change(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _f24ci = 0
+    while _f24ci < len(sectors) {
+        const sec = sectors[_f24ci]
+        _f24ci = _f24ci + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = sec["floorheight"] + 24 * FRACUNIT
         const new_pic = get_floor_pic_from_line(line)
@@ -1086,7 +1200,10 @@ func ev_do_floor_raise_24_change(line) {
 // Floor raise 512 units
 func ev_do_floor_raise_512(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _f512i = 0
+    while _f512i < len(sectors) {
+        const sec = sectors[_f512i]
+        _f512i = _f512i + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const target = sec["floorheight"] + 512 * FRACUNIT
         door_thinkers.push({
@@ -1104,7 +1221,10 @@ func ev_do_floor_raise_512(line) {
 // Floor raise by shortest lower texture around sector
 func ev_do_floor_raise_by_shortest_tex(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _fsti = 0
+    while _fsti < len(sectors) {
+        const sec = sectors[_fsti]
+        _fsti = _fsti + 1
         if sector_has_active_thinker(sec, "floor") { continue }
         const shortest = find_shortest_texture_around(sec)
         const target = sec["floorheight"] + shortest
@@ -1127,7 +1247,10 @@ func ev_do_floor_raise_by_shortest_tex(line) {
 // Ceiling lower to floor
 func ev_do_ceiling_lower_to_floor(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _clfi = 0
+    while _clfi < len(sectors) {
+        const sec = sectors[_clfi]
+        _clfi = _clfi + 1
         if sector_has_active_thinker(sec, "ceiling") { continue }
         const target = sec["floorheight"]
         door_thinkers.push({
@@ -1147,7 +1270,10 @@ func ev_do_ceiling_lower_to_floor(line) {
 // Ceiling lower to floor + 8
 func ev_do_ceiling_lower_to_floor_plus_8(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _clf8i = 0
+    while _clf8i < len(sectors) {
+        const sec = sectors[_clf8i]
+        _clf8i = _clf8i + 1
         if sector_has_active_thinker(sec, "ceiling") { continue }
         const target = sec["floorheight"] + 8 * FRACUNIT
         door_thinkers.push({
@@ -1167,7 +1293,10 @@ func ev_do_ceiling_lower_to_floor_plus_8(line) {
 // Ceiling raise to highest surrounding ceiling
 func ev_do_ceiling_raise_to_highest(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _crhi = 0
+    while _crhi < len(sectors) {
+        const sec = sectors[_crhi]
+        _crhi = _crhi + 1
         if sector_has_active_thinker(sec, "ceiling") { continue }
         const target = find_highest_ceiling_around(sec)
         door_thinkers.push({
@@ -1191,7 +1320,10 @@ func ev_do_ceiling_raise_to_highest(line) {
 // Slow crusher: ceiling moves down to floor + 8, reverses on contact, repeats
 func ev_do_crusher_slow(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _csi = 0
+    while _csi < len(sectors) {
+        const sec = sectors[_csi]
+        _csi = _csi + 1
         if sector_has_active_thinker(sec, "crusher") { continue }
         door_thinkers.push({
             "type": "crusher",
@@ -1212,7 +1344,10 @@ func ev_do_crusher_slow(line) {
 // Slow crusher perpetual: never stops
 func ev_do_crusher_slow_perpetual(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _cspi = 0
+    while _cspi < len(sectors) {
+        const sec = sectors[_cspi]
+        _cspi = _cspi + 1
         if sector_has_active_thinker(sec, "crusher") { continue }
         door_thinkers.push({
             "type": "crusher",
@@ -1233,7 +1368,10 @@ func ev_do_crusher_slow_perpetual(line) {
 // Fast crusher perpetual
 func ev_do_crusher_fast(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _cfi = 0
+    while _cfi < len(sectors) {
+        const sec = sectors[_cfi]
+        _cfi = _cfi + 1
         if sector_has_active_thinker(sec, "crusher") { continue }
         door_thinkers.push({
             "type": "crusher",
@@ -1254,7 +1392,10 @@ func ev_do_crusher_fast(line) {
 // Fast crusher perpetual (same as fast but used by type 6: W1)
 func ev_do_crusher_fast_perpetual(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _cfpi = 0
+    while _cfpi < len(sectors) {
+        const sec = sectors[_cfpi]
+        _cfpi = _cfpi + 1
         if sector_has_active_thinker(sec, "crusher") { continue }
         door_thinkers.push({
             "type": "crusher",
@@ -1275,7 +1416,10 @@ func ev_do_crusher_fast_perpetual(line) {
 // Silent crusher
 func ev_do_crusher_silent(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _csli = 0
+    while _csli < len(sectors) {
+        const sec = sectors[_csli]
+        _csli = _csli + 1
         if sector_has_active_thinker(sec, "crusher") { continue }
         door_thinkers.push({
             "type": "crusher",
@@ -1353,7 +1497,10 @@ func build_stairs(line, speed, step_height) {
         ok = false
         let found_next = false
         // Find a linedef that borders the current sector
-        for ld in map_linedefs {
+        let _sbi = 0
+        while _sbi < len(map_linedefs) {
+            const ld = map_linedefs[_sbi]
+            _sbi = _sbi + 1
             let other = null
             if ld["frontsector"] == map_sectors[sec_idx] && ld["backsector"] != null {
                 other = ld["backsector"]
@@ -1388,8 +1535,8 @@ func build_stairs(line, speed, step_height) {
             })
             ok = true
             found_next = true
-            // Break out of for to continue while loop with new sector
-            break
+            // Break out of while to continue outer while loop with new sector
+            _sbi = len(map_linedefs)
         }
         if !found_next { ok = false }
     }
@@ -1402,7 +1549,10 @@ func build_stairs(line, speed, step_height) {
 // Lights to 35 (darkest)
 func ev_do_light_off(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _loi = 0
+    while _loi < len(sectors) {
+        const sec = sectors[_loi]
+        _loi = _loi + 1
         sec["lightlevel"] = 35
     }
 }
@@ -1410,7 +1560,10 @@ func ev_do_light_off(line) {
 // Lights to minimum surrounding
 func ev_do_light_min_surrounding(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _lmsi = 0
+    while _lmsi < len(sectors) {
+        const sec = sectors[_lmsi]
+        _lmsi = _lmsi + 1
         const min_light = find_min_surrounding_light(sec, sec["lightlevel"])
         sec["lightlevel"] = min_light
     }
@@ -1419,7 +1572,10 @@ func ev_do_light_min_surrounding(line) {
 // Lights to brightest surrounding
 func ev_do_light_brightest(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _lbi = 0
+    while _lbi < len(sectors) {
+        const sec = sectors[_lbi]
+        _lbi = _lbi + 1
         const max_light = find_max_surrounding_light(sec, 0)
         sec["lightlevel"] = max_light
     }
@@ -1428,7 +1584,10 @@ func ev_do_light_brightest(line) {
 // Lights to 255 (full bright)
 func ev_do_light_on_255(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _l255i = 0
+    while _l255i < len(sectors) {
+        const sec = sectors[_l255i]
+        _l255i = _l255i + 1
         sec["lightlevel"] = 255
     }
 }
@@ -1436,7 +1595,10 @@ func ev_do_light_on_255(line) {
 // Start light strobing / blinking effect
 func ev_start_light_strobing(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _lsi = 0
+    while _lsi < len(sectors) {
+        const sec = sectors[_lsi]
+        _lsi = _lsi + 1
         if sector_has_active_thinker(sec, "strobe") { continue }
         const min_light = find_min_surrounding_light(sec, sec["lightlevel"])
         door_thinkers.push({
@@ -1458,7 +1620,10 @@ func ev_start_light_strobing(line) {
 
 // Called during map load to set up sector-based light effects
 func doors_spawn_sector_specials() {
-    for sec in map_sectors {
+    let _sspi = 0
+    while _sspi < len(map_sectors) {
+        const sec = map_sectors[_sspi]
+        _sspi = _sspi + 1
         match sec["special"] {
             1 => {
                 // Light Blink Random
@@ -1578,10 +1743,16 @@ func doors_spawn_sector_specials() {
 func ev_do_teleport(line) {
     const tag = line["tag"]
     // Find the destination sector(s) with matching tag
-    for sec in map_sectors {
+    let _tsi = 0
+    while _tsi < len(map_sectors) {
+        const sec = map_sectors[_tsi]
+        _tsi = _tsi + 1
         if sec["tag"] != tag { continue }
         // Find teleport destination thing (doomednum 14) in this sector
-        for thing in map_things {
+        let _tti = 0
+        while _tti < len(map_things) {
+            const thing = map_things[_tti]
+            _tti = _tti + 1
             if thing["type"] != 14 { continue }
             // Check if the thing is in the tagged sector
             const thing_ss = map_get_subsector(thing["x"], thing["y"])
@@ -1597,7 +1768,7 @@ func ev_do_teleport(line) {
             player_z = player_floorz
             player_momx = 0
             player_momy = 0
-            player_angle = thing["angle"] * ANG45 / 45
+            player_angle = thing["angle"] * 0x20000000 / 45
 
             // Update sector info
             const new_ss = map_get_subsector(player_x, player_y)
@@ -1613,7 +1784,7 @@ func ev_do_teleport(line) {
             // Spawn teleport fog at source
             spawn_teleport_fog(oldx, oldy)
             // Spawn teleport fog at destination
-            const dest_angle = thing["angle"] * ANG45 / 45
+            const dest_angle = thing["angle"] * 0x20000000 / 45
             const fog_x = player_x + 20 * FRACUNIT * fixed_to_int(fine_cosine(dest_angle)) / 65536
             const fog_y = player_y + 20 * FRACUNIT * fixed_to_int(fine_sine(dest_angle)) / 65536
             spawn_teleport_fog(fog_x, fog_y)
@@ -1646,13 +1817,19 @@ func spawn_teleport_fog(x, y) {
 // and changes the inner texture to match the outer ring.
 func ev_do_donut(line) {
     const sectors = find_all_tagged_sectors(line["tag"])
-    for sec in sectors {
+    let _ddi = 0
+    while _ddi < len(sectors) {
+        const sec = sectors[_ddi]
+        _ddi = _ddi + 1
         if sector_has_active_thinker(sec, "floor") { continue }
 
         // Find the outer ring: the sector on the other side of any 2-sided line
         let outer = null
         let outer_line = null
-        for ld in map_linedefs {
+        let _ddj = 0
+        while _ddj < len(map_linedefs) {
+            const ld = map_linedefs[_ddj]
+            _ddj = _ddj + 1
             if ld["frontsector"] == sec && ld["backsector"] != null {
                 outer = ld["backsector"]
                 outer_line = ld
@@ -1662,7 +1839,10 @@ func ev_do_donut(line) {
 
         // Find the donut ring model: sector on the other side of outer from the pool
         let model = null
-        for ld in map_linedefs {
+        let _ddk = 0
+        while _ddk < len(map_linedefs) {
+            const ld = map_linedefs[_ddk]
+            _ddk = _ddk + 1
             if ld["frontsector"] == outer && ld["backsector"] != null && ld["backsector"] != sec {
                 model = ld["backsector"]
             }
@@ -2143,7 +2323,10 @@ func doors_update_animations() {
     if anim_tic % 8 != 0 { return }
 
     // Cycle animated flats in all sectors
-    for entry in anim_flats {
+    let _ani = 0
+    while _ani < len(anim_flats) {
+        const entry = anim_flats[_ani]
+        _ani = _ani + 1
         const base = entry[0]
         const frames = entry[1]
         const frame = (anim_tic / 8) % frames
@@ -2156,7 +2339,10 @@ func doors_update_animations() {
 // SCROLLING WALLS (type 48 -- special linedef flag)
 // ===========================================================================
 func doors_update_scrolling_walls() {
-    for line in map_linedefs {
+    let _swi = 0
+    while _swi < len(map_linedefs) {
+        const line = map_linedefs[_swi]
+        _swi = _swi + 1
         if line["special"] == 48 {
             // Scroll texture left: adjust texture offset on front sidedef
             if line["front"] != null {

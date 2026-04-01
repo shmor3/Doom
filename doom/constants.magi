@@ -143,6 +143,9 @@ const SC_D      = 7
 const SC_E      = 8
 const SC_LSHIFT = 225
 const SC_LCTRL  = 224
+const SC_LALT   = 226
+const SC_COMMA  = 54
+const SC_PERIOD = 55
 const SC_1 = 30
 const SC_2 = 31
 const SC_3 = 32
@@ -167,3 +170,6 @@ const MAXLIGHTZ = 128
 const LIGHTZSHIFT = 20
 const LIGHTBRIGHT = 2
 const NUMCOLORMAPS = 32
+
+const SC_F7 = 64
+const SC_F9 = 66

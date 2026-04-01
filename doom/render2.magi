@@ -1,0 +1,439 @@
+// render2.magi — Doom renderer ported 1:1 from doom-rust-renderer
+// Float perspective projection, per-column boolean occlusion, per-pixel visplanes.
+// Wall rendering and visplane rendering done in native C for performance.
+
+// =====================================================================
+// Constants (matching doom-rust-renderer/constants.rs)
+// =====================================================================
+const PLAYER_EYE_HEIGHT = 41.0
+const ASPECT_RATIO = 200.0 / 240.0
+const GAME_SCREEN_W = SCREENWIDTH * 1.0 / ASPECT_RATIO
+const GAME_FOCUS_X = GAME_SCREEN_W / 2.0
+const CAM_FOCUS_X = SCREENWIDTH * 1.0 / 2.0
+const CAM_FOCUS_Y = SCREENHEIGHT * 1.0 / 2.0
+const FLAT_SIZE = 64
+
+// =====================================================================
+// State
+// =====================================================================
+let r2_fb = []
+let r2_hor_ocl = []
+let r2_floor_ocl = []
+let r2_ceil_ocl = []
+let r2_visplanes = []
+
+func r2_init() {
+    r2_fb = []
+    let i = 0
+    while i < SCREENWIDTH * SCREENHEIGHT { r2_fb.push(0); i = i + 1 }
+}
+
+func r2_clear() {
+    let i = 0
+    while i < SCREENWIDTH * SCREENHEIGHT { r2_fb[i] = 0; i = i + 1 }
+    r2_hor_ocl = []
+    r2_floor_ocl = []
+    r2_ceil_ocl = []
+    i = 0
+    while i < SCREENWIDTH {
+        r2_hor_ocl.push(0)
+        r2_floor_ocl.push(SCREENHEIGHT)
+        r2_ceil_ocl.push(-1)
+        i = i + 1
+    }
+    r2_visplanes = []
+}
+
+// =====================================================================
+// Geometry helpers
+// =====================================================================
+func r2_rotate(vx, vy, angle) {
+    const c = cos(angle)
+    const s = sin(angle)
+    [vx * c - vy * s, vx * s + vy * c]
+}
+
+func r2_line_length(x1, y1, x2, y2) {
+    sqrt((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1))
+}
+
+// =====================================================================
+// Viewport clipping (matching misc.rs clip_to_viewport)
+// Clips line against 45-degree FOV. Returns null or [sx,sy,ex,ey,start_offset]
+// =====================================================================
+func r2_clip(sx, sy, ex, ey) {
+    const s_left = sy > sx
+    const e_left = ey > ex
+    const s_right = sy < (0.0 - sx)
+    const e_right = ey < (0.0 - ex)
+    const s_in = sx > 0.0 && !s_left && !s_right
+    const e_in = ex > 0.0 && !e_left && !e_right
+
+    if s_in && e_in { return [sx, sy, ex, ey, 0.0] }
+
+    const dx = ex - sx
+    const dy = ey - sy
+
+    // Left clip line: y = x. Intersection: t = (sx - sy) / (dy - dx)
+    let li_t = -1.0
+    let li_x = 0.0
+    const ld = dy - dx
+    if ld != 0.0 {
+        li_t = (sx - sy) / ld
+        li_x = sx + li_t * dx
+    }
+    const l_hit = li_t >= 0.0 && li_t <= 1.0 && li_x >= 0.0
+
+    // Right clip line: y = -x. Intersection: t = -(sx + sy) / (dx + dy)
+    let ri_t = -1.0
+    let ri_x = 0.0
+    const rd = dx + dy
+    if rd != 0.0 {
+        ri_t = (0.0 - (sx + sy)) / rd
+        ri_x = sx + ri_t * dx
+    }
+    const r_hit = ri_t >= 0.0 && ri_t <= 1.0 && ri_x >= 0.0
+
+    if !s_in && !e_in && !l_hit && !r_hit { return null }
+    if !s_in && !e_in && l_hit != r_hit { return null }
+    if (r_hit && s_right && e_right) || (l_hit && s_left && e_left) { return null }
+
+    let nsx = sx
+    let nsy = sy
+    let nex = ex
+    let ney = ey
+    let start_offset = 0.0
+
+    if l_hit {
+        if s_left {
+            const osx = nsx
+            const osy = nsy
+            nsx = li_x
+            nsy = li_x
+            start_offset = sqrt((nsx - osx) * (nsx - osx) + (nsy - osy) * (nsy - osy))
+        }
+        if e_left { nex = li_x; ney = li_x }
+    }
+    if r_hit {
+        if s_right { nsx = ri_x; nsy = 0.0 - ri_x }
+        if e_right { nex = ri_x; ney = 0.0 - ri_x }
+    }
+
+    if nsx <= 0.0 && nex <= 0.0 { return null }
+    if nsx <= 0.01 { nsx = 0.01 }
+    if nex <= 0.01 { nex = 0.01 }
+
+    [nsx, nsy, nex, ney, start_offset]
+}
+
+// =====================================================================
+// Perspective projection (matching misc.rs)
+// =====================================================================
+func r2_project_x(wx, wy) {
+    if wx <= 0.01 { return CAM_FOCUS_X }
+    CAM_FOCUS_X - (GAME_FOCUS_X * wy / wx) * ASPECT_RATIO
+}
+
+func r2_project_y(wx, height) {
+    if wx <= 0.01 { return CAM_FOCUS_Y }
+    CAM_FOCUS_Y - GAME_FOCUS_X * height / wx
+}
+
+// =====================================================================
+// Process a single seg (matching segs.rs process_seg + process_sidedef)
+// =====================================================================
+func r2_process_seg(seg) {
+    const v1 = seg["v1"]
+    const v2 = seg["v2"]
+    const frontsector = seg["frontsector"]
+    const backsector = seg["backsector"]
+    const sidedef = seg["sidedef"]
+    if frontsector == null || sidedef == null { return }
+
+    const pi = 3.14159265358979323846
+    const pangle = player_angle * 1.0 / (0x80000000 * 1.0) * pi
+
+    // Transform to player-relative view space
+    const wx1 = fixed_to_int(v1["x"] - player_x) * 1.0
+    const wy1 = fixed_to_int(v1["y"] - player_y) * 1.0
+    const wx2 = fixed_to_int(v2["x"] - player_x) * 1.0
+    const wy2 = fixed_to_int(v2["y"] - player_y) * 1.0
+    const r1 = r2_rotate(wx1, wy1, 0.0 - pangle)
+    const r2 = r2_rotate(wx2, wy2, 0.0 - pangle)
+
+    // Clip to viewport
+    const clipped = r2_clip(r1[0], r1[1], r2[0], r2[1])
+    if clipped == null { return }
+    const cx1 = clipped[0]
+    const cy1 = clipped[1]
+    const cx2 = clipped[2]
+    const cy2 = clipped[3]
+    const clip_offset = clipped[4]
+
+    // Project to screen
+    const scr_x1 = floor(r2_project_x(cx1, cy1))
+    const scr_x2 = floor(r2_project_x(cx2, cy2))
+    if scr_x1 >= scr_x2 { return }
+
+    // Heights relative to eye
+    const player_h = fixed_to_int(player_viewz) * 1.0
+    const floor_h = fixed_to_int(frontsector["floorheight"]) * 1.0 - player_h
+    const ceil_h = fixed_to_int(frontsector["ceilingheight"]) * 1.0 - player_h
+    const light = frontsector["lightlevel"]
+    const is_solid = backsector == null
+
+    // Texture info
+    const midtex_name = if sidedef != null { sidedef["midtexture"] } else { "-" }
+    const toptex_name = if sidedef != null { sidedef["toptexture"] } else { "-" }
+    const bottex_name = if sidedef != null { sidedef["bottomtexture"] } else { "-" }
+    const tex_xoff = if sidedef != null { fixed_to_int(sidedef["textureoffset"]) } else { 0 }
+    const tex_yoff = if sidedef != null { fixed_to_int(sidedef["rowoffset"]) } else { 0 }
+    const seg_offset = fixed_to_int(seg["offset"])
+
+    // Back sector heights for two-sided lines
+    let back_floor_h = floor_h
+    let back_ceil_h = ceil_h
+    let has_lower = false
+    let has_upper = false
+    if backsector != null {
+        back_floor_h = fixed_to_int(backsector["floorheight"]) * 1.0 - player_h
+        back_ceil_h = fixed_to_int(backsector["ceilingheight"]) * 1.0 - player_h
+        if back_floor_h > floor_h { has_lower = true }
+        if back_ceil_h < ceil_h { has_upper = true }
+    }
+
+    // Clipped line length for texture mapping
+    const seg_len = r2_line_length(cx1, cy1, cx2, cy2)
+    const x_range = scr_x2 - scr_x1
+    if x_range <= 0 { return }
+
+    // Per-column rendering
+    let ix = scr_x1
+    while ix < scr_x2 {
+        const x = floor(ix)
+        if x < 0 || x >= SCREENWIDTH { ix = ix + 1; continue }
+        if r2_hor_ocl[x] != 0 { ix = ix + 1; continue }
+
+        const t = (ix - scr_x1) / x_range
+        const depth = cx1 + t * (cx2 - cx1)
+        if depth <= 0.01 { ix = ix + 1; continue }
+
+        const bot_y = floor(r2_project_y(depth, floor_h))
+        const top_y = floor(r2_project_y(depth, ceil_h))
+        const fl_ocl = r2_floor_ocl[x]
+        const cl_ocl = r2_ceil_ocl[x]
+        const cb = if bot_y < fl_ocl { bot_y } else { fl_ocl }
+        const ct = if top_y > cl_ocl { top_y } else { cl_ocl }
+
+        if cb <= ct { ix = ix + 1; continue }
+
+        // Perspective-correct texture X
+        const uz0 = if cx1 > 0.01 { cx1 } else { 0.01 }
+        const uz1 = if cx2 > 0.01 { cx2 } else { 0.01 }
+        const inv0 = 1.0 / uz0
+        const inv1 = 1.0 / uz1
+        let raw_tx = floor(((1.0 - t) * 0.0 + t * seg_len * inv1) / ((1.0 - t) * inv0 + t * inv1))
+        raw_tx = raw_tx + clip_offset + tex_xoff + seg_offset
+        const z_col = floor(1.0 / ((1.0 - t) * inv0 + t * inv1))
+
+        if is_solid {
+            // Draw solid wall texture
+            r2_draw_tex_col(x, ct + 1, cb - 1, midtex_name, raw_tx, tex_yoff,
+                floor_h, ceil_h, depth, light, z_col)
+
+            // Add ceiling visplane
+            if ct > cl_ocl + 1 {
+                r2_add_visplane_col(x, cl_ocl + 1, ct, frontsector, true)
+            }
+            // Add floor visplane
+            if cb < fl_ocl - 1 {
+                r2_add_visplane_col(x, cb, fl_ocl - 1, frontsector, false)
+            }
+
+            r2_hor_ocl[x] = 1
+            r2_floor_ocl[x] = SCREENHEIGHT / 2
+            r2_ceil_ocl[x] = SCREENHEIGHT / 2
+        } else {
+            // Two-sided: ceiling visplane
+            if ct > cl_ocl + 1 {
+                r2_add_visplane_col(x, cl_ocl + 1, ct, frontsector, true)
+            }
+            // Floor visplane
+            if cb < fl_ocl - 1 {
+                r2_add_visplane_col(x, cb, fl_ocl - 1, frontsector, false)
+            }
+
+            if has_upper {
+                const bty = floor(r2_project_y(depth, back_ceil_h))
+                const wt = if ct + 1 > cl_ocl + 1 { ct + 1 } else { cl_ocl + 1 }
+                const wb = if bty < fl_ocl { bty } else { fl_ocl }
+                if wt <= wb {
+                    r2_draw_tex_col(x, wt, wb, toptex_name, raw_tx, tex_yoff,
+                        back_ceil_h, ceil_h, depth, light, z_col)
+                }
+                if bty > r2_ceil_ocl[x] { r2_ceil_ocl[x] = bty }
+            }
+            if has_lower {
+                const bby = floor(r2_project_y(depth, back_floor_h))
+                const wt2 = if bby > cl_ocl { bby } else { cl_ocl }
+                const wb2 = if cb - 1 < fl_ocl - 1 { cb - 1 } else { fl_ocl - 1 }
+                if wt2 <= wb2 {
+                    r2_draw_tex_col(x, wt2, wb2, bottex_name, raw_tx, tex_yoff,
+                        floor_h, back_floor_h, depth, light, z_col)
+                }
+                if bby < r2_floor_ocl[x] { r2_floor_ocl[x] = bby }
+            }
+        }
+        ix = ix + 1
+    }
+}
+
+// =====================================================================
+// Draw a textured wall column
+// =====================================================================
+func r2_draw_tex_col(x, y1, y2, tex_name, raw_tx, offset_y, bot_h, top_h, depth, light, z_col) {
+    if y1 > y2 { return }
+    if tex_name == "-" || tex_name == "" { return }
+
+    const tex_idx = texture_find_index(tex_name)
+    if tex_idx < 0 || tex_idx >= len(tex_textures) { return }
+    const tex = tex_textures[tex_idx]
+    if tex == null { return }
+    const tw = tex[1]
+    const th = tex[2]
+    if tw <= 0 || th <= 0 { return }
+
+    let tx = floor(raw_tx)
+    if tx < 0 { tx = tx + tw * (1 - tx / tw) }
+    tx = tx % tw
+
+    const column = texture_get_column(tex_idx, tx)
+    if column == null { return }
+    const col_h = len(column)
+    if col_h == 0 { return }
+
+    // Screen-space top and bottom of the full wall
+    const scr_top = r2_project_y(depth, top_h)
+    const scr_bot = r2_project_y(depth, bot_h)
+    if scr_bot <= scr_top { return }
+
+    // Lighting matching original DOOM r_segs.c:
+    // walllights = scalelight[lightlevel >> LIGHTSEGSHIFT]
+    // dc_colormap = walllights[pspriteiscale >> LIGHTSCALESHIFT]
+    // where pspriteiscale = FRACUNIT * SCREENWIDTH / (rw_scale * viewwidth)
+    // rw_scale = projection / depth (projection = SCREENWIDTH/2 * FRACUNIT / tan(FOV/2))
+    // For 320 wide, projection ~= 160 * FRACUNIT
+    // rw_scale = 160*65536 / (depth_in_fixedpoint)
+    // pspriteiscale = 65536 * 320 / (rw_scale * 320) = 65536 / rw_scale = depth/160
+    // lightindex = pspriteiscale >> 12 = depth / (160 * 4096)
+    // But we work in float world units, so depth here is already in map units
+    // scale_index = (160.0 / depth) mapped to 0..47 range
+    const lightindex = floor(light / 16)
+    let startmap = ((15 - lightindex) * 2) * NUMCOLORMAPS / 16
+    // Original: scalelight index = projection_scale >> LIGHTSCALESHIFT(12)
+    // projection_scale = 160*FRACUNIT / depth_fixed = 160*65536 / (depth*65536) = 160/depth
+    // scalelight_idx = (160/depth) >> 12... but that's tiny for reasonable depths
+    // Actually the scalelight formula uses the SCREEN scale, not world depth
+    // scalelight index j = rw_scale >> LIGHTSCALESHIFT where rw_scale = projection/rw_distance
+    // rw_scale is in fixed-point: for depth=128 map units, rw_scale = 160*65536/128/65536 * 65536 = 160/128 * 65536
+    // j = (160/128 * 65536) >> 12 = 1.25 * 16 = 20
+    let scale_idx = floor(160.0 / depth * 16.0)
+    if scale_idx < 0 { scale_idx = 0 }
+    if scale_idx > 47 { scale_idx = 47 }
+    let cmap_idx = startmap - scale_idx / 2
+    if cmap_idx < 0 { cmap_idx = 0 }
+    if cmap_idx >= NUMCOLORMAPS { cmap_idx = NUMCOLORMAPS - 1 }
+    const cmap = get_colormap(cmap_idx)
+
+    // Render column using native C for speed
+    __render_wall_col(r2_fb, column, x, y1, y2, col_h, scr_top, scr_bot - scr_top, th, cmap)
+}
+
+// =====================================================================
+// Add a visplane column entry
+// =====================================================================
+func r2_add_visplane_col(x, y1, y2, sector, is_ceiling) {
+    const pic_name = if is_ceiling { sector["ceilingpic"] } else { sector["floorpic"] }
+    const height = if is_ceiling { sector["ceilingheight"] } else { sector["floorheight"] }
+    const light = sector["lightlevel"]
+    // Flat lighting matching original DOOM (r_plane.c R_MapPlane):
+    // Uses zlight[lightlevel>>4][distance>>LIGHTZSHIFT]
+    const lightindex = floor(light / 16)
+    let startmap = ((15 - lightindex) * 2) * NUMCOLORMAPS / 16
+    // For flats, we pass the light level and let the C renderer compute per-row distance
+    let cmap_idx = startmap
+    if cmap_idx < 0 { cmap_idx = 0 }
+    if cmap_idx >= NUMCOLORMAPS { cmap_idx = NUMCOLORMAPS - 1 }
+    const cmap = get_colormap(cmap_idx)
+    const flat = texture_get_flat(pic_name)
+    if flat != null {
+        // New API: fb, flat, x, y1, y2, player_x, player_y, player_floor_h, player_angle_bam, plane_height, light_level, cmap
+        const player_ss = map_get_subsector(player_x, player_y)
+        let pf_h = 0
+        if player_ss < map_num_subsectors {
+            const ps = map_subsectors[player_ss]["sector"]
+            if ps != null { pf_h = ps["floorheight"] }
+        }
+        __render_flat_col(r2_fb, flat, x, y1, y2, player_x, player_y, pf_h, player_angle, height, light, cmap)
+    }
+}
+
+// =====================================================================
+// Subsector callback
+// =====================================================================
+func r2_render_subsector(ssnum) {
+    if ssnum < 0 || ssnum >= map_num_subsectors { return }
+    const ss = map_subsectors[ssnum]
+    if ss["sector"] == null { return }
+    let i = 0
+    const n = ss["numlines"]
+    const f = ss["firstline"]
+    while i < n {
+        const si = f + i
+        if si >= 0 && si < map_num_segs { r2_process_seg(map_segs[si]) }
+        i = i + 1
+    }
+}
+
+// =====================================================================
+// Entry point
+// =====================================================================
+func r2_render_player_view() {
+    r2_clear()
+    r_viewx = player_x
+    r_viewy = player_y
+    r_viewz = player_viewz
+    r_viewangle = player_angle
+    r_viewsin = fine_sine(r_viewangle)
+    r_viewcos = fine_cosine(r_viewangle)
+    bsp_new_validcount()
+    r_render_bsp_node(map_num_nodes - 1, r2_render_subsector)
+
+    // Fill ALL uncovered pixels with floor/ceiling from player's sector
+    const player_ss = map_get_subsector(r_viewx, r_viewy)
+    let player_sector = null
+    if player_ss < map_num_subsectors {
+        player_sector = map_subsectors[player_ss]["sector"]
+    }
+    if player_sector != null {
+        let px = 0
+        while px < SCREENWIDTH {
+            // For every column, fill any remaining gap with ceiling/floor
+            const cl = r2_ceil_ocl[px]
+            const fl = r2_floor_ocl[px]
+            // Ceiling: from row 0 down to where ceiling clip ends
+            // If cl == -1 (untouched), ceiling goes from 0 to SCREENHEIGHT/2
+            const ceil_bottom = if cl > 0 { cl } else { SCREENHEIGHT / 2 - 1 }
+            if ceil_bottom >= 0 {
+                r2_add_visplane_col(px, 0, ceil_bottom, player_sector, true)
+            }
+            // Floor: from where floor clip starts down to SCREENHEIGHT
+            // If fl == SCREENHEIGHT (untouched), floor goes from SCREENHEIGHT/2 to end
+            const floor_top = if fl < SCREENHEIGHT { fl } else { SCREENHEIGHT / 2 }
+            if floor_top < SCREENHEIGHT {
+                r2_add_visplane_col(px, floor_top, SCREENHEIGHT - 1, player_sector, false)
+            }
+            px = px + 1
+        }
+    }
+}
